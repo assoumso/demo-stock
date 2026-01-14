@@ -11,10 +11,10 @@ import { permissionConfig } from '../config/permissions';
 
 const initialSettings: AppSettings = {
     id: 'app-config',
-    companyName: 'ETS-YABABOU',
+    companyName: 'ETS-DEMO',
     companyAddress: 'Cotonou, Bénin',
     companyPhone: '+229 00 00 00 00',
-    companyEmail: 'contact@yababou.com',
+    companyEmail: 'contact@demo.com',
     companyContact: 'Direction',
     companyRCCM: 'RB/COT/24 B 0000',
     companyLogoUrl: '',

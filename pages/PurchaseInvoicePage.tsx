@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { db } from '../firebase';
@@ -130,7 +131,7 @@ const PurchaseInvoicePage: React.FC = () => {
     const [supplier, setSupplier] = useState<Supplier | undefined>(undefined);
     const [allProducts, setAllProducts] = useState<Product[]>([]);
     const [companyInfo, setCompanyInfo] = useState<CompanyInfo>({
-        name: 'ETS-YABABOU',
+        name: 'ETS-DEMO',
         address: '',
         phone: '',
         email: '',
@@ -170,7 +171,7 @@ const PurchaseInvoicePage: React.FC = () => {
                 if (settingsSnap.exists()) {
                     const settingsData = settingsSnap.data() as AppSettings;
                     setCompanyInfo({
-                        name: settingsData.companyName || 'ETS-YABABOU',
+                        name: settingsData.companyName || 'ETS-DEMO',
                         address: settingsData.companyAddress || '',
                         phone: settingsData.companyPhone || '',
                         email: settingsData.companyEmail,

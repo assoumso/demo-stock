@@ -55,7 +55,7 @@ const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 export const ThemeProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [theme, setTheme] = useState<ThemeName>('amber');
-  const [companyName, setCompanyName] = useState<string>('ETS-YABABOU');
+  const [companyName, setCompanyName] = useState<string>('ETS-DEMO');
   const [loading, setLoading] = useState(true);
 
   const fetchSettings = async () => {

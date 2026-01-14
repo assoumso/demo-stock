@@ -235,7 +235,7 @@ const CustomerAccountPage: React.FC = () => {
                             <p className="text-lg font-black uppercase">Solde Débiteur: {formatCurrency(summary.balance)}</p>
                             <p className="text-[10px] font-bold text-gray-500 uppercase">{summary.balance > 0 ? 'Reste à payer' : 'Compte en règle'}</p>
                         </div>
-                        <p className="text-[10px] font-black uppercase underline">Signature et Cachet ETS-YABABOU</p>
+                        <p className="text-[10px] font-black uppercase underline">Signature et Cachet ETS-DEMO</p>
                     </div>
                 </div>
             </div>

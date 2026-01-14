@@ -223,7 +223,7 @@ const SupplierAccountPage: React.FC = () => {
                             <p className="text-lg font-black uppercase">Dette Arrêtée à: {formatCurrency(summary.balance)}</p>
                             <p className="text-[10px] font-bold text-gray-500 uppercase">{summary.balance > 0 ? 'Solde à régler' : 'Compte Fournisseur Apuré'}</p>
                         </div>
-                        <p className="text-[10px] font-black uppercase underline">Cachet Direction ETS-YABABOU</p>
+                        <p className="text-[10px] font-black uppercase underline">Cachet Direction ETS-DEMO</p>
                     </div>
                 </div>
             </div>
