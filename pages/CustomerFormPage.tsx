@@ -1,15 +1,17 @@
 
 import React, { useState, useEffect, FormEvent } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { db } from '../firebase';
 import { doc, getDoc, setDoc, collection, addDoc, DocumentData } from 'firebase/firestore';
 import { Customer } from '../types';
-import { ArrowLeftIcon, ShieldCheckIcon } from '../constants';
+import { ArrowLeftIcon } from '../constants';
 
 const CustomerFormPage: React.FC = () => {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
+    const location = useLocation();
     const isEditing = !!id;
+    const returnTo = location.state?.returnTo;
 
     const [formState, setFormState] = useState<Partial<Customer>>({
         name: '',
@@ -23,7 +25,9 @@ const CustomerFormPage: React.FC = () => {
         website: '',
         notes: '',
         isCreditLimited: false,
-        creditLimit: 0
+        creditLimit: 0,
+        openingBalance: 0,
+        openingBalanceDate: new Date().toISOString().split('T')[0]
     });
 
     const [loading, setLoading] = useState(isEditing);
@@ -55,7 +59,7 @@ const CustomerFormPage: React.FC = () => {
         if (type === 'checkbox') {
             setFormState(prev => ({ ...prev, [name]: (e.target as HTMLInputElement).checked }));
         } else {
-            const isNumber = ['creditLimit'].includes(name);
+            const isNumber = ['creditLimit', 'openingBalance'].includes(name);
             setFormState(prev => ({ ...prev, [name]: isNumber ? parseFloat(value) || 0 : value }));
         }
     };
@@ -70,7 +74,12 @@ const CustomerFormPage: React.FC = () => {
             } else {
                 await addDoc(collection(db, 'customers'), formState);
             }
-            navigate('/customers');
+            
+            if (returnTo) {
+                navigate(returnTo);
+            } else {
+                navigate('/customers');
+            }
         } catch (err: any) {
             setError(`Erreur: ${err.message}`);
         } finally {
@@ -87,7 +96,7 @@ const CustomerFormPage: React.FC = () => {
         <div className="max-w-4xl mx-auto pb-12">
             <header className="flex items-center justify-between mb-8">
                 <div className="flex items-center">
-                    <button onClick={() => navigate('/customers')} className="p-2 mr-4 bg-white dark:bg-gray-800 rounded-full shadow-sm border dark:border-gray-700 hover:scale-110 transition-transform">
+                    <button onClick={() => navigate(returnTo || '/customers')} className="p-2 mr-4 bg-white dark:bg-gray-800 rounded-full shadow-sm border dark:border-gray-700 hover:scale-110 transition-transform">
                         <ArrowLeftIcon className="w-5 h-5 text-gray-500" />
                     </button>
                     <div>
@@ -138,6 +147,18 @@ const CustomerFormPage: React.FC = () => {
                         Compte & Crédit
                     </h2>
                     <div className="space-y-6">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-4 bg-gray-50 dark:bg-gray-900/40 rounded-2xl border border-dashed">
+                             <div>
+                                <label className={labelClasses}>Solde d'ouverture (FCFA)</label>
+                                <input type="number" name="openingBalance" value={formState.openingBalance} onChange={handleInputChange} className={`${inputClasses} border-blue-200`} placeholder="Ancienne dette client..."/>
+                                <p className="text-[10px] text-gray-500 mt-1 italic">Dette antérieure à l'utilisation du logiciel.</p>
+                            </div>
+                            <div>
+                                <label className={labelClasses}>Date du solde</label>
+                                <input type="date" name="openingBalanceDate" value={formState.openingBalanceDate} onChange={handleInputChange} className={inputClasses} />
+                            </div>
+                        </div>
+
                         <div className="flex items-center p-4 bg-orange-50 dark:bg-orange-900/20 rounded-2xl border border-orange-100 dark:border-orange-800">
                             <input type="checkbox" name="isCreditLimited" id="isCreditLimited" checked={formState.isCreditLimited} onChange={handleInputChange} className="h-6 w-6 text-primary-600 rounded-lg border-gray-300 mr-4" />
                             <label htmlFor="isCreditLimited" className="text-sm font-bold text-orange-900 dark:text-orange-100 uppercase">Activer une limite de crédit pour ce client</label>
