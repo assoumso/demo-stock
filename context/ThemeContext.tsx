@@ -41,6 +41,8 @@ const applyTheme = (themeName: ThemeName) => {
     for (const key in palette) {
         document.documentElement.style.setProperty(`--color-primary-${key}`, palette[key]);
     }
+    // Mise en cache synchrone pour le head du HTML
+    localStorage.setItem('app_theme_color', themeName);
 };
 
 interface ThemeContextType {
@@ -54,8 +56,16 @@ interface ThemeContextType {
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 export const ThemeProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [theme, setTheme] = useState<ThemeName>('amber');
-  const [companyName, setCompanyName] = useState<string>('ETS-DEMO');
+  // Récupération synchrone immédiate pour éviter le flash
+  const [theme, setTheme] = useState<ThemeName>(() => {
+    const cached = localStorage.getItem('app_theme_color') as ThemeName;
+    return (cached && themes[cached]) ? cached : 'amber';
+  });
+
+  const [companyName, setCompanyName] = useState<string>(() => {
+    return localStorage.getItem('app_company_name') || 'ETS-DEMO';
+  });
+
   const [loading, setLoading] = useState(true);
 
   const fetchSettings = async () => {
@@ -65,19 +75,21 @@ export const ThemeProvider: React.FC<{ children: ReactNode }> = ({ children }) =
           if (settingsSnap.exists()) {
               const settings = settingsSnap.data() as AppSettings;
               
-              // Appliquer le thème
+              // Appliquer et mettre en cache le thème
               const savedTheme = settings.themeColor as ThemeName;
               if (savedTheme && themes[savedTheme]) {
                   setTheme(savedTheme);
+                  localStorage.setItem('app_theme_color', savedTheme);
               }
 
-              // Appliquer le nom de l'entreprise
+              // Appliquer et mettre en cache le nom
               if (settings.companyName) {
                   setCompanyName(settings.companyName);
+                  localStorage.setItem('app_company_name', settings.companyName);
               }
           }
       } catch (error) {
-          console.warn("Erreur chargement paramètres, utilisation des valeurs par défaut.");
+          console.warn("Erreur chargement paramètres, utilisation du cache.");
       } finally {
           setLoading(false);
       }

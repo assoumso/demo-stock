@@ -4,7 +4,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { db } from '../firebase';
 import { doc, getDoc, collection, getDocs } from 'firebase/firestore';
 import { Sale, Customer, Product, AppSettings } from '../types';
-import { PrintIcon, ArrowLeftIcon } from '../constants';
+import { PrintIcon, ArrowLeftIcon, WhatsappIcon } from '../constants';
 
 interface CompanyInfo {
     name: string;
@@ -31,11 +31,11 @@ const InvoiceTemplate: React.FC<InvoiceTemplateProps> = ({ sale, customer, produ
     const remainingBalance = sale.grandTotal - sale.paidAmount;
 
     return (
-        <div className="bg-white text-black p-8 font-sans invoice-template flex flex-col justify-between" style={{ width: '210mm', minHeight: '297mm', margin: 'auto' }}>
+        <div id="capture-zone" className="bg-white text-black p-8 font-sans invoice-template flex flex-col justify-between" style={{ width: '210mm', minHeight: '297mm', margin: 'auto' }}>
             <header>
                 <div className="flex justify-between items-start mb-8">
                     <div className="flex items-center space-x-4">
-                        {companyInfo.logoUrl && <img src={companyInfo.logoUrl} alt="Company Logo" className="h-20 w-auto" />}
+                        {companyInfo.logoUrl && <img src={companyInfo.logoUrl} alt="Company Logo" className="h-20 w-auto" crossOrigin="anonymous" />}
                         <div>
                             <h1 className="text-3xl font-bold text-gray-800">{companyInfo.name}</h1>
                             <p className="text-sm text-gray-600">{companyInfo.address}</p>
@@ -130,6 +130,7 @@ const SaleInvoicePage: React.FC = () => {
     });
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [isSharing, setIsSharing] = useState(false);
 
     useEffect(() => {
         const fetchInvoiceData = async () => {
@@ -188,6 +189,72 @@ const SaleInvoicePage: React.FC = () => {
         fetchInvoiceData();
     }, [id]);
 
+    const formatCurrency = (value: number) => new Intl.NumberFormat('fr-FR').format(value) + ` ${companyInfo.currencySymbol || 'FCFA'}`;
+
+    const handleShareWhatsapp = async () => {
+        if (!sale || !customer?.phone) {
+            alert("Numéro de téléphone du client manquant.");
+            return;
+        }
+
+        setIsSharing(true);
+        const element = document.getElementById('capture-zone');
+        if (!element) return;
+
+        try {
+            // 1. Capture de la facture en image puis PDF
+            const canvas = await (window as any).html2canvas(element, { 
+                scale: 2,
+                useCORS: true,
+                logging: false,
+                windowWidth: 1200 
+            });
+            
+            const imgData = canvas.toDataURL('image/png');
+            const { jsPDF } = (window as any).jspdf;
+            const pdf = new jsPDF('p', 'mm', 'a4');
+            const imgProps = pdf.getImageProperties(imgData);
+            const pdfWidth = pdf.internal.pageSize.getWidth();
+            const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+            
+            pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+            const pdfBlob = pdf.output('blob');
+            const fileName = `Facture_${sale.referenceNumber}.pdf`;
+            const pdfFile = new File([pdfBlob], fileName, { type: 'application/pdf' });
+
+            // 2. Normalisation du numéro
+            let cleanPhone = customer.phone.replace(/\s+/g, '');
+            if (cleanPhone.startsWith('00')) cleanPhone = cleanPhone.substring(2);
+            if (cleanPhone.startsWith('+')) cleanPhone = cleanPhone.substring(1);
+            if (cleanPhone.length >= 8 && cleanPhone.length <= 10 && !cleanPhone.startsWith('229')) {
+                cleanPhone = '229' + cleanPhone;
+            }
+
+            const balance = sale.grandTotal - sale.paidAmount;
+            const messageText = `*${companyInfo.name.toUpperCase()}*\n\nBonjour *${customer.name}*,\n\nVoici votre facture *${sale.referenceNumber}*.\n\n- *Total:* ${formatCurrency(sale.grandTotal)}\n${balance > 0 ? `- *RESTE À PAYER:* ${formatCurrency(balance)}` : '✅ *Soldée*'}\n\nMerci !`;
+
+            // 3. Partage Natif (Mobile) si supporté
+            if (navigator.share && navigator.canShare && navigator.canShare({ files: [pdfFile] })) {
+                await navigator.share({
+                    files: [pdfFile],
+                    title: fileName,
+                    text: messageText,
+                });
+            } else {
+                // 4. Fallback Desktop : Téléchargement + Ouverture WhatsApp
+                pdf.save(fileName);
+                const whatsappUrl = `https://api.whatsapp.com/send?phone=${cleanPhone}&text=${encodeURIComponent(messageText)}`;
+                window.open(whatsappUrl, '_blank');
+                alert("La facture a été téléchargée. Veuillez la joindre dans la fenêtre WhatsApp qui vient de s'ouvrir.");
+            }
+        } catch (err) {
+            console.error("Erreur lors du partage:", err);
+            alert("Une erreur est survenue lors de la génération du PDF.");
+        } finally {
+            setIsSharing(false);
+        }
+    };
+
     if (loading) {
         return <div className="flex h-screen items-center justify-center">Chargement de la facture...</div>;
     }
@@ -203,7 +270,7 @@ const SaleInvoicePage: React.FC = () => {
     return (
         <div className="bg-gray-200 dark:bg-gray-900 min-h-screen invoice-page-container">
             <header className="no-print bg-white dark:bg-gray-800 p-4 shadow-md flex justify-between items-center sticky top-0 z-10">
-                <h1 className="text-lg font-semibold text-gray-800 dark:text-white">Facture de Vente : {sale.referenceNumber}</h1>
+                <h1 className="text-lg font-semibold text-gray-800 dark:text-white">Facture : {sale.referenceNumber}</h1>
                 <div className="flex items-center space-x-2">
                     <button
                         onClick={() => navigate('/sales')}
@@ -213,11 +280,22 @@ const SaleInvoicePage: React.FC = () => {
                         Retour
                     </button>
                     <button
+                        onClick={handleShareWhatsapp}
+                        disabled={isSharing}
+                        className={`flex items-center px-4 py-2 text-sm text-white bg-green-600 rounded-md hover:bg-green-700 ${isSharing ? 'opacity-50 cursor-wait' : ''}`}
+                    >
+                        {isSharing ? (
+                            <span className="flex items-center"><svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Préparation...</span>
+                        ) : (
+                            <><WhatsappIcon className="w-5 h-5 mr-2" /> Partager WhatsApp</>
+                        )}
+                    </button>
+                    <button
                         onClick={() => window.print()}
                         className="flex items-center px-4 py-2 text-sm text-white bg-primary-600 rounded-md hover:bg-primary-700"
                     >
                         <PrintIcon className="w-5 h-5 mr-2" />
-                        Imprimer / Enregistrer en PDF
+                        Imprimer / PDF
                     </button>
                 </div>
             </header>
