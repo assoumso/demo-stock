@@ -24,7 +24,7 @@ const initialSettings: AppSettings = {
     purchaseInvoicePrefix: 'ACH-',
     defaultTaxRate: 0,
     defaultPosCustomerId: 'walkin',
-    themeColor: 'amber',
+    themeColor: 'teal', // Changé par défaut à 'teal' (Vert)
 };
 
 const COLLECTIONS_TO_MIGRATE = [
@@ -276,7 +276,7 @@ const SettingsPage: React.FC = () => {
                                         : 'border-gray-100 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
                                     }`}
                                 >
-                                    <div className="w-6 h-6 rounded-full mr-3 shadow-inner" style={{ backgroundColor: `rgb(${availableThemes[t as keyof typeof availableThemes]['500']})` }}></div>
+                                    <div className="w-6 h-6 rounded-full mr-3 shadow-inner" style={{ backgroundColor: `rgb(${availableThemes[t as keyof typeof availableThemes]['50']})` }}></div>
                                     <span className="capitalize font-bold text-sm">{t === 'amber' ? 'Ambre' : t === 'teal' ? 'Turquoise' : t === 'sky' ? 'Ciel' : 'Rose'}</span>
                                     {settings.themeColor === t && <div className="absolute -top-2 -right-2 bg-primary-500 text-white rounded-full p-1 shadow-lg"><ShieldCheckIcon className="w-4 h-4"/></div>}
                                 </button>

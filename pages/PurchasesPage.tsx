@@ -44,6 +44,8 @@ const PurchasesPage: React.FC = () => {
     const [newPayment, setNewPayment] = useState({ 
         amount: 0, 
         method: 'Espèces' as PaymentMethod, 
+        momoOperator: '',
+        momoNumber: '',
         date: new Date().toISOString().split('T')[0],
         attachmentFile: null as File | null
     });
@@ -106,7 +108,6 @@ const PurchasesPage: React.FC = () => {
 
     const getSupplierName = (id: string) => suppliers.find(c => c.id === id)?.name || 'N/A';
     
-    // FIX: Correctly extract name and value from e.target to fix the 'name' is not defined error.
     const handleFilterChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
         const { name, value } = e.target;
         setFilters(prev => ({ ...prev, [name]: value }));
@@ -121,7 +122,6 @@ const PurchasesPage: React.FC = () => {
         try {
             await runTransaction(db, async (transaction) => {
                 const purchaseRef = doc(db, "purchases", purchase.id);
-                // --- READ PHASE ---
                 const purchaseDoc = await transaction.get(purchaseRef);
                 if (!purchaseDoc.exists()) throw new Error("Achat déjà supprimé.");
                 const currentData = purchaseDoc.data() as Purchase;
@@ -131,7 +131,6 @@ const PurchasesPage: React.FC = () => {
                     const productRefs = currentData.items.map(item => doc(db, "products", item.productId));
                     const productDocs = await Promise.all(productRefs.map(ref => transaction.get(ref)));
                     
-                    // --- LOGIC PHASE ---
                     productDocs.forEach((pDoc, i) => {
                         if (pDoc.exists()) {
                             const pData = pDoc.data();
@@ -146,7 +145,6 @@ const PurchasesPage: React.FC = () => {
                     });
                 }
                 
-                // --- WRITE PHASE ---
                 stockUpdates.forEach(update => transaction.update(update.ref, { stockLevels: update.stockLevels }));
                 transaction.delete(purchaseRef);
             });
@@ -167,7 +165,6 @@ const PurchasesPage: React.FC = () => {
             const purchaseToDelete = purchases.find(p => p.id === purchaseId);
             if (purchaseToDelete) {
                 await handleDelete(purchaseToDelete);
-                // DÉLAI DE SÉCURITÉ POUR ÉVITER "RESOURCE EXHAUSTED"
                 await new Promise(r => setTimeout(r, 500));
             }
         }
@@ -189,13 +186,19 @@ const PurchasesPage: React.FC = () => {
             setError("Impossible de charger les paiements.");
         }
         const remaining = purchase.grandTotal - purchase.paidAmount;
-        setNewPayment({ amount: remaining > 0 ? remaining : 0, method: 'Espèces', date: new Date().toISOString().split('T')[0], attachmentFile: null });
+        setNewPayment({ amount: remaining > 0 ? remaining : 0, method: 'Espèces', momoOperator: '', momoNumber: '', date: new Date().toISOString().split('T')[0], attachmentFile: null });
         setIsPaymentModalOpen(true);
     };
 
     const handleAddPayment = async (e: FormEvent) => {
         e.preventDefault();
         if (!selectedPurchase || newPayment.amount <= 0 || !user) return setError("Montant invalide.");
+
+        if (newPayment.method === 'Mobile Money' && (!newPayment.momoOperator || !newPayment.momoNumber)) {
+            setError("Opérateur et numéro requis pour Mobile Money.");
+            return;
+        }
+
         const remaining = selectedPurchase.grandTotal - selectedPurchase.paidAmount;
         if (newPayment.amount > remaining + 0.01) return setError("Le paiement dépasse le solde.");
         
@@ -205,7 +208,6 @@ const PurchasesPage: React.FC = () => {
         try {
             let attachmentUrl: string | undefined;
             if (newPayment.attachmentFile) {
-                // FIX: Used modular SDK ref(), uploadBytes() and getDownloadURL() instead of legacy storage.ref().put()
                 const storageRef = ref(storage, `purchase_payments/${selectedPurchase.id}/${Date.now()}_${newPayment.attachmentFile.name}`);
                 await uploadBytes(storageRef, newPayment.attachmentFile);
                 attachmentUrl = await getDownloadURL(storageRef);
@@ -223,7 +225,20 @@ const PurchasesPage: React.FC = () => {
 
                 transaction.update(purchaseRef, { paidAmount: newPaid, paymentStatus: newStatus });
 
-                const paymentData: Omit<Payment, 'id'> = { purchaseId: selectedPurchase.id, date: new Date(newPayment.date).toISOString(), amount: newPayment.amount, method: newPayment.method, createdByUserId: user.uid, ...(attachmentUrl && { attachmentUrl }) };
+                const paymentData: Omit<Payment, 'id'> = { 
+                    purchaseId: selectedPurchase.id, 
+                    date: new Date(newPayment.date).toISOString(), 
+                    amount: newPayment.amount, 
+                    method: newPayment.method, 
+                    createdByUserId: user.uid, 
+                    ...(attachmentUrl && { attachmentUrl }) 
+                };
+
+                if (newPayment.method === 'Mobile Money') {
+                    paymentData.momoOperator = newPayment.momoOperator;
+                    paymentData.momoNumber = newPayment.momoNumber;
+                }
+
                 transaction.set(doc(collection(db, "purchasePayments")), paymentData as DocumentData);
             });
             await fetchData();
@@ -319,17 +334,39 @@ const PurchasesPage: React.FC = () => {
                             <div><span className="block text-xs text-gray-500">Solde</span><span className="text-lg font-bold text-red-600">{formatCurrency(remainingBalance)}</span></div>
                         </div>
                         <div className="border-t pt-4"><h3 className="font-semibold mb-2">Historique</h3>
-                            <div className="max-h-40 overflow-y-auto">{payments.length > 0 ? <ul className="divide-y dark:divide-gray-700">{payments.map(p => (<li key={p.id} className="py-2 flex justify-between"><div><span>{new Date(p.date).toLocaleDateString('fr-FR')} - {p.method}</span><span className="block font-medium">{formatCurrency(p.amount)}</span></div>{p.attachmentUrl && <a href={p.attachmentUrl} target="_blank" rel="noopener noreferrer" className="text-primary-600"><DownloadIcon className="w-5 h-5"/></a>}</li>))}</ul> : <p>Aucun paiement.</p>}</div>
+                            <div className="max-h-40 overflow-y-auto">{payments.length > 0 ? <ul className="divide-y dark:divide-gray-700">{payments.map(p => (<li key={p.id} className="py-2 flex flex-col">
+                                <div className="flex justify-between">
+                                    <span>{new Date(p.date).toLocaleDateString('fr-FR')} - {p.method}</span>
+                                    <span className="font-medium">{formatCurrency(p.amount)}</span>
+                                </div>
+                                {p.method === 'Mobile Money' && (
+                                    <span className="text-[10px] text-gray-500 uppercase font-black">{p.momoOperator} : {p.momoNumber}</span>
+                                )}
+                                {p.attachmentUrl && <a href={p.attachmentUrl} target="_blank" rel="noopener noreferrer" className="text-primary-600 mt-1"><DownloadIcon className="w-4 h-4"/></a>}
+                            </li>))}</ul> : <p>Aucun paiement.</p>}</div>
                         </div>
                         {remainingBalance > 0.01 && (
                         <form onSubmit={handleAddPayment} className="border-t pt-4 space-y-3">
                             <h3 className="font-semibold">Ajouter un paiement</h3>{error && <p className="text-sm text-red-500">{error}</p>}
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                 <div><label className="text-sm">Montant</label><input type="number" step="any" min="0.01" max={remainingBalance} value={newPayment.amount} onChange={e => setNewPayment(p => ({...p, amount: parseFloat(e.target.value) || 0}))} required className="w-full border rounded p-2 dark:bg-gray-700"/></div>
-                                <div><label className="text-sm">Méthode</label><select value={newPayment.method} onChange={e => setNewPayment(p => ({...p, method: e.target.value as PaymentMethod}))} className="w-full border rounded p-2 dark:bg-gray-700"><option>Espèces</option><option>Virement bancaire</option><option>Autre</option></select></div>
                                 <div><label className="text-sm">Date</label><input type="date" value={newPayment.date} onChange={e => setNewPayment(p => ({...p, date: e.target.value}))} required className="w-full border rounded p-2 dark:bg-gray-700"/></div>
                             </div>
-                            <div><label className="block text-sm">Pièce jointe</label><div className="mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-dashed rounded-md"><div className="space-y-1 text-center"><UploadIcon className="mx-auto h-12 w-12 text-gray-400" /><div className="flex text-sm"><label htmlFor="file-upload" className="relative cursor-pointer rounded-md font-medium text-primary-600"><span>Télécharger un fichier</span><input id="file-upload" type="file" className="sr-only" onChange={e => setNewPayment(p => ({...p, attachmentFile: e.target.files ? e.target.files[0] : null}))} /></label></div>{newPayment.attachmentFile && <p className="text-xs">{newPayment.attachmentFile.name}</p>}</div></div></div>
+                            <div>
+                                <label className="text-sm">Méthode</label>
+                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-1">
+                                    {['Espèces', 'Virement bancaire', 'Mobile Money', 'Autre'].map(m => (
+                                        <button key={m} type="button" onClick={() => setNewPayment(p => ({...p, method: m as PaymentMethod}))} className={`py-2 text-[10px] font-bold uppercase border-2 rounded-lg ${newPayment.method === m ? 'bg-primary-600 text-white border-primary-600' : 'bg-white dark:bg-gray-700 text-gray-500'}`}>{m}</button>
+                                    ))}
+                                </div>
+                            </div>
+                            {newPayment.method === 'Mobile Money' && (
+                                <div className="grid grid-cols-2 gap-3 animate-in fade-in duration-300">
+                                    <div><label className="text-xs">Opérateur</label><input type="text" value={newPayment.momoOperator} onChange={e => setNewPayment(p => ({...p, momoOperator: e.target.value}))} placeholder="MTN, Moov..." className="w-full border rounded p-2 dark:bg-gray-700 font-bold uppercase"/></div>
+                                    <div><label className="text-xs">Numéro</label><input type="tel" value={newPayment.momoNumber} onChange={e => setNewPayment(p => ({...p, momoNumber: e.target.value}))} placeholder="00000000" className="w-full border rounded p-2 dark:bg-gray-700 font-bold"/></div>
+                                </div>
+                            )}
+                            <div><label className="block text-sm">Pièce jointe</label><div className="mt-1 flex justify-center px-6 pt-2 pb-2 border-2 border-dashed rounded-md"><div className="space-y-1 text-center"><div className="flex text-sm"><label htmlFor="file-upload" className="relative cursor-pointer rounded-md font-medium text-primary-600"><span>Télécharger un fichier</span><input id="file-upload" type="file" className="sr-only" onChange={e => setNewPayment(p => ({...p, attachmentFile: e.target.files ? e.target.files[0] : null}))} /></label></div>{newPayment.attachmentFile && <p className="text-xs">{newPayment.attachmentFile.name}</p>}</div></div></div>
                             <div className="bg-gray-50 dark:bg-gray-700/50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse -mx-6 -mb-6 mt-6">
                                 <button type="submit" disabled={isSubmittingPayment} className="px-4 py-2 bg-primary-600 text-white rounded">{isSubmittingPayment ? 'Ajout...' : 'Ajouter Paiement'}</button>
                                 <button type="button" onClick={() => setIsPaymentModalOpen(false)} className="mr-2 px-4 py-2 bg-gray-200 rounded">Annuler</button>

@@ -32,6 +32,8 @@ export interface BasePartner {
   email?: string;
   phone?: string;
   businessName?: string;
+  // Added contactPerson to BasePartner to track primary contact person for customers and suppliers
+  contactPerson?: string;
   address?: string;
   city?: string;
   nif?: string;
@@ -54,7 +56,8 @@ export interface Customer extends BasePartner {
  * Supplier profile.
  */
 export interface Supplier extends BasePartner {
-  // Add supplier-specific fields here if needed
+  openingBalance?: number;
+  openingBalanceDate?: string;
 }
 
 /**
@@ -135,7 +138,7 @@ export interface SaleItem {
 
 export type PaymentStatus = 'En attente' | 'Partiel' | 'Payé';
 export type SaleStatus = 'En attente' | 'Complétée';
-export type PaymentMethod = 'Espèces' | 'Virement bancaire' | 'Autre';
+export type PaymentMethod = 'Espèces' | 'Virement bancaire' | 'Mobile Money' | 'Autre';
 
 /**
  * Sale transaction record.
@@ -153,6 +156,7 @@ export interface Sale {
   saleStatus: SaleStatus;
   paymentDueDate?: string;
   paymentDeadlineDays?: number;
+  notes?: string;
 }
 
 /**
@@ -164,8 +168,25 @@ export interface SalePayment {
   date: string;
   amount: number;
   method: PaymentMethod;
+  momoOperator?: string;
+  momoNumber?: string;
   createdByUserId: string;
   attachmentUrl?: string;
+  notes?: string;
+}
+
+export interface DeletedSalePayment {
+  originalPayment: SalePayment;
+  deletedAt: string;
+  deletedBy: string;
+  deleteReason: string;
+}
+
+export interface DeletedPurchasePayment {
+  originalPayment: Payment;
+  deletedAt: string;
+  deletedBy: string;
+  deleteReason: string;
 }
 
 /**
@@ -207,8 +228,11 @@ export interface Payment {
   date: string;
   amount: number;
   method: PaymentMethod;
+  momoOperator?: string;
+  momoNumber?: string;
   createdByUserId: string;
   attachmentUrl?: string;
+  notes?: string;
 }
 
 /**

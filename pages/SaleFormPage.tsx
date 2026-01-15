@@ -1,8 +1,7 @@
-
 import React, { useState, useEffect, useMemo, FormEvent } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { db } from '../firebase';
-import { collection, doc, getDoc, getDocs, addDoc, updateDoc, runTransaction, DocumentData, query, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, addDoc, updateDoc, runTransaction, DocumentData, query, where, DocumentReference } from 'firebase/firestore';
 import { Sale, SaleItem, Product, Customer, Warehouse, PaymentStatus, AppSettings } from '../types';
 import { DeleteIcon, PlusIcon, WarningIcon } from '../constants';
 import { useAuth } from '../hooks/useAuth';
@@ -12,6 +11,7 @@ type FormSale = Omit<Sale, 'id'>;
 const SaleFormPage: React.FC = () => {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
+    const location = useLocation();
     const { user } = useAuth();
     const isEditing = !!id;
 
@@ -30,6 +30,7 @@ const SaleFormPage: React.FC = () => {
         paymentStatus: 'En attente',
         saleStatus: 'En attente',
         paymentDeadlineDays: 0,
+        notes: '',
     });
     
     const [loading, setLoading] = useState(true);
@@ -99,7 +100,6 @@ const SaleFormPage: React.FC = () => {
                 return;
             }
             try {
-                // On récupère le client pour avoir son openingBalance
                 const cust = customers.find(c => c.id === formState.customerId);
                 let totalUnpaid = cust?.openingBalance || 0;
 
@@ -108,9 +108,7 @@ const SaleFormPage: React.FC = () => {
                 snap.docs.forEach(doc => {
                     const sale = doc.data() as Sale;
                     if (id && doc.id === id) return;
-                    if (sale.paymentStatus !== 'Payé') {
-                        totalUnpaid += (sale.grandTotal - (sale.paidAmount || 0));
-                    }
+                    totalUnpaid += (sale.grandTotal - (sale.paidAmount || 0));
                 });
                 setCustomerBalance(totalUnpaid);
             } catch (e) {
@@ -123,8 +121,7 @@ const SaleFormPage: React.FC = () => {
     const userVisibleWarehouses = useMemo(() => {
         if (!user) return [];
         if (user.role.name.toLowerCase().includes('admin')) return warehouses;
-        const userWarehouseIds = user.warehouseIds || [];
-        return warehouses.filter(wh => userWarehouseIds.includes(wh.id));
+        return warehouses.filter(wh => user.warehouseIds?.includes(wh.id));
     }, [user, warehouses]);
 
     useEffect(() => {
@@ -161,14 +158,6 @@ const SaleFormPage: React.FC = () => {
         item[field] = value;
         item.subtotal = item.quantity * item.price;
         setFormState(prev => ({ ...prev, items: newItems }));
-    };
-
-    const getAvailableStock = (productId: string, warehouseId: string): number => {
-        const product = products.find(p => p.id === productId);
-        if (product?.type === 'service') return Infinity;
-        if (!product || !product.stockLevels) return 0;
-        const stockLevel = product.stockLevels.find(sl => sl.warehouseId === warehouseId);
-        return stockLevel ? stockLevel.quantity : 0;
     };
 
     const addProductToSale = (product: Product) => {
@@ -209,29 +198,83 @@ const SaleFormPage: React.FC = () => {
         try {
             await runTransaction(db, async (transaction) => {
                 const saleRef = isEditing ? doc(db, 'sales', id!) : doc(collection(db, "sales"));
+                
+                // --- PHASE 1 : READS ---
                 const originalSaleDoc = isEditing ? await transaction.get(saleRef) : null;
                 const originalSale = originalSaleDoc?.exists() ? originalSaleDoc.data() as Sale : null;
 
-                for (const item of finalSaleData.items) {
-                    const productRef = doc(db, 'products', item.productId);
-                    const productDoc = await transaction.get(productRef);
-                    if (!productDoc.exists() || productDoc.data().type === 'service') continue;
-                    
-                    const stockLevels = [...(productDoc.data().stockLevels || [])];
-                    let stockChange = 0;
-                    const wasCompleted = originalSale?.saleStatus === 'Complétée';
-                    const isNowCompleted = finalSaleData.saleStatus === 'Complétée';
-                    const originalItem = originalSale?.items.find(i => i.productId === item.productId);
+                const allProductIds = Array.from(new Set([
+                    ...finalSaleData.items.map((i: SaleItem) => i.productId),
+                    ...(originalSale?.items.map(i => i.productId) || [])
+                ]));
+                
+                const productSnapshots = await Promise.all(
+                    allProductIds.map(pid => transaction.get(doc(db, 'products', pid)))
+                );
 
-                    if (!wasCompleted && isNowCompleted) stockChange = -item.quantity;
-                    else if (wasCompleted && !isNowCompleted) stockChange = (originalItem?.quantity || 0);
-                    else if (wasCompleted && isNowCompleted) stockChange = (originalItem?.quantity || 0) - item.quantity;
+                // --- PHASE 2 : LOGIC & CALCULATIONS ---
+                const wasCompleted = originalSale?.saleStatus === 'Complétée';
+                const isNowCompleted = finalSaleData.saleStatus === 'Complétée';
+                const stockUpdates: { ref: DocumentReference, newStockLevels: any[] }[] = [];
 
-                    if (stockChange !== 0) {
-                        const whIndex = stockLevels.findIndex(sl => sl.warehouseId === finalSaleData.warehouseId);
-                        if (whIndex > -1) stockLevels[whIndex].quantity += stockChange;
-                        else if (stockChange < 0) stockLevels.push({ warehouseId: finalSaleData.warehouseId, quantity: stockChange });
-                        transaction.update(productRef, { stockLevels });
+                if (wasCompleted || isNowCompleted) {
+                    allProductIds.forEach((productId, idx) => {
+                        const productSnap = productSnapshots[idx];
+                        if (!productSnap.exists()) return;
+                        
+                        const productData = productSnap.data() as Product;
+                        if (productData.type === 'service') return;
+
+                        let stockLevels = [...(productData.stockLevels || [])];
+                        const newItem = finalSaleData.items.find((i: SaleItem) => i.productId === productId);
+                        const originalItem = originalSale?.items.find(i => i.productId === productId);
+
+                        // 1. Recharger le stock si c'était complété avant
+                        if (wasCompleted && originalItem) {
+                            const whIdx = stockLevels.findIndex(sl => sl.warehouseId === originalSale!.warehouseId);
+                            if (whIdx > -1) stockLevels[whIdx].quantity += originalItem.quantity;
+                        }
+
+                        // 2. Déduire le stock si c'est complété maintenant
+                        if (isNowCompleted && newItem) {
+                            const whIdx = stockLevels.findIndex(sl => sl.warehouseId === finalSaleData.warehouseId);
+                            if (whIdx > -1) {
+                                stockLevels[whIdx].quantity -= newItem.quantity;
+                            } else {
+                                stockLevels.push({ warehouseId: finalSaleData.warehouseId, quantity: -newItem.quantity });
+                            }
+                        }
+
+                        stockUpdates.push({ ref: doc(db, 'products', productId), newStockLevels: stockLevels });
+                    });
+                }
+
+                // --- PHASE 3 : WRITES ---
+                stockUpdates.forEach(update => {
+                    transaction.update(update.ref, { stockLevels: update.newStockLevels });
+                });
+
+                if (!isEditing && finalSaleData.paidAmount > 0 && user) {
+                    const paymentRef = doc(collection(db, "salePayments"));
+                    transaction.set(paymentRef, {
+                        saleId: saleRef.id,
+                        date: new Date().toISOString(),
+                        amount: finalSaleData.paidAmount,
+                        method: 'Espèces',
+                        createdByUserId: user.uid,
+                        note: 'Paiement initial à la vente'
+                    });
+                } else if (isEditing && originalSale && finalSaleData.paidAmount !== originalSale.paidAmount && user) {
+                    const diff = finalSaleData.paidAmount - originalSale.paidAmount;
+                    if (diff !== 0) {
+                        transaction.set(doc(collection(db, "salePayments")), {
+                            saleId: saleRef.id,
+                            date: new Date().toISOString(),
+                            amount: diff,
+                            method: 'Autre',
+                            createdByUserId: user.uid,
+                            note: 'Ajustement manuel du montant payé sur facture'
+                        });
                     }
                 }
 
@@ -262,7 +305,7 @@ const SaleFormPage: React.FC = () => {
     const formatCurrency = (value?: number) => new Intl.NumberFormat('fr-FR').format(value || 0) + ' Fcfa';
     const inputFormClasses = "mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white transition-all focus:ring-primary-500 focus:border-primary-500";
 
-    if (loading) return <div className="text-center p-8">Chargement...</div>;
+    if (loading) return <div className="text-center p-8 text-gray-400 font-bold animate-pulse">Initialisation...</div>;
 
     return (
         <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md">
@@ -281,7 +324,7 @@ const SaleFormPage: React.FC = () => {
                         <label className="block text-xs font-black uppercase text-gray-400">Client</label>
                         <div className="flex items-center">
                             <input type="text" value={customerSearchTerm} onChange={e => { setCustomerSearchTerm(e.target.value); setFormState(prev => ({...prev, customerId: ''})); setSelectedCustomer(null); }} placeholder="Rechercher un client" className={`${inputFormClasses} rounded-r-none`} />
-                            <button type="button" onClick={handleQuickAddCustomer} className="px-3 py-2 bg-primary-600 text-white rounded-r-md hover:bg-primary-700 h-10 mt-1" title="Nouveau Client (Formulaire complet)"><PlusIcon className="w-5 h-5"/></button>
+                            <button type="button" onClick={handleQuickAddCustomer} className="px-3 py-2 bg-primary-600 text-white rounded-r-md hover:bg-primary-700 h-10 mt-1" title="Nouveau Client"><PlusIcon className="w-5 h-5"/></button>
                         </div>
                         {filteredCustomers.length > 0 && !formState.customerId && (
                             <ul className="absolute z-20 w-full mt-1 bg-white dark:bg-gray-800 shadow-2xl rounded-md py-1 border dark:border-gray-700 overflow-hidden">
@@ -324,20 +367,24 @@ const SaleFormPage: React.FC = () => {
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-6 border-t-2 border-dashed">
                     <div className="md:col-span-2 space-y-4">
-                        <div><label className="block text-xs font-black uppercase">Statut de la vente</label><select name="saleStatus" value={formState.saleStatus} onChange={handleFormChange} className={inputFormClasses}><option>En attente</option><option>Complétée</option></select></div>
-                        <div><label className="block text-xs font-black uppercase text-green-600">Montant payé</label><input type="number" name="paidAmount" value={formState.paidAmount || ''} onChange={handleFormChange} className={`${inputFormClasses} border-green-200 text-green-700 font-bold`}/></div>
+                        <div><label className="block text-xs font-black uppercase tracking-widest text-gray-400">Statut de la vente</label><select name="saleStatus" value={formState.saleStatus} onChange={handleFormChange} className={inputFormClasses}><option>En attente</option><option>Complétée</option></select></div>
+                        <div><label className="block text-xs font-black uppercase tracking-widest text-green-600">Montant versé (Acompte)</label><input type="number" name="paidAmount" value={formState.paidAmount || ''} onChange={handleFormChange} className={`${inputFormClasses} border-green-200 text-green-700 font-bold`}/></div>
+                        <div>
+                            <label className="block text-xs font-black uppercase tracking-widest text-gray-400">Note / Observation</label>
+                            <textarea name="notes" rows={3} value={formState.notes || ''} onChange={handleFormChange} className={inputFormClasses} placeholder="Observations, détails supplémentaires..."></textarea>
+                        </div>
                     </div>
-                    <div className="space-y-4 bg-gray-50 dark:bg-gray-900/30 p-4 rounded-2xl border">
+                    <div className="space-y-4 bg-gray-50 dark:bg-gray-900/30 p-4 rounded-2xl border dark:border-gray-700">
                         <div className="pt-2">
-                            <h3 className="text-xs font-black text-gray-500 uppercase">Total Général</h3>
+                            <h3 className="text-xs font-black text-gray-500 uppercase tracking-widest">Total Général</h3>
                             <p className="text-3xl font-black text-primary-600 mt-1">{formatCurrency(formState.grandTotal)}</p>
                         </div>
                     </div>
                 </div>
 
                 <div className="flex justify-end space-x-3 pt-6">
-                    <button type="button" onClick={() => navigate('/sales')} className="px-6 py-3 text-sm font-bold text-gray-500 bg-gray-100 rounded-xl hover:bg-gray-200">Annuler</button>
-                    <button type="submit" className="px-10 py-3 text-sm text-white bg-primary-600 rounded-xl font-black shadow-lg hover:bg-primary-700">Enregistrer</button>
+                    <button type="button" onClick={() => navigate('/sales')} className="px-6 py-3 text-sm font-bold text-gray-500 bg-gray-100 dark:bg-gray-700 rounded-xl hover:bg-gray-200">Annuler</button>
+                    <button type="submit" className="px-10 py-3 text-sm text-white bg-primary-600 rounded-xl font-black shadow-lg hover:bg-primary-700 active:scale-95 transition-all">Enregistrer la vente</button>
                 </div>
             </form>
         </div>

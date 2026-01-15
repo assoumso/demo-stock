@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { db } from '../firebase';
 import { collection, getDocs, doc, runTransaction, addDoc, DocumentData, getDoc, DocumentReference, query, where } from 'firebase/firestore';
@@ -6,7 +5,7 @@ import { Product, Category, Customer, Warehouse, Sale, SaleItem, AppSettings, Pa
 import { useAuth } from '../hooks/useAuth';
 import Modal from '../components/Modal';
 import { SearchIcon, DeleteIcon, WarningIcon } from '../constants';
-import reactToPrint from 'react-to-print';
+import { useReactToPrint } from 'react-to-print';
 import PosReceipt from '../components/PosReceipt';
 
 
@@ -38,6 +37,8 @@ const PosPage: React.FC = () => {
     const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
     const [amountTendered, setAmountTendered] = useState(0);
     const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Espèces');
+    const [momoOperator, setMomoOperator] = useState('');
+    const [momoNumber, setMomoNumber] = useState('');
     
     // Post-Sale State
     const [lastSale, setLastSale] = useState<Sale | null>(null);
@@ -86,7 +87,6 @@ const PosPage: React.FC = () => {
         }
     }, [user]);
 
-    // Track customer balance - Filtrage local pour éviter l'erreur d'index Firestore
     useEffect(() => {
         const fetchBalance = async () => {
             if (!selectedCustomerId || selectedCustomerId === 'walkin') {
@@ -94,7 +94,6 @@ const PosPage: React.FC = () => {
                 return;
             }
             try {
-                // On récupère toutes les ventes du client et on filtre localement le statut de paiement
                 const q = query(collection(db, "sales"), where("customerId", "==", selectedCustomerId));
                 const snap = await getDocs(q);
                 let totalUnpaid = 0;
@@ -199,7 +198,6 @@ const PosPage: React.FC = () => {
         }
     };
 
-    
     const cartTotal = useMemo(() => {
         return cart.reduce((sum, item) => sum + item.subtotal, 0);
     }, [cart]);
@@ -212,9 +210,8 @@ const PosPage: React.FC = () => {
         return 0;
     }, [amountTendered, cartTotal]);
     
-    const useReactToPrint = (reactToPrint as any).useReactToPrint || reactToPrint;
     const handlePrint = useReactToPrint({
-        content: () => receiptRef.current,
+        contentRef: receiptRef,
     });
 
     const resetSale = async () => {
@@ -222,6 +219,8 @@ const PosPage: React.FC = () => {
         setIsPaymentModalOpen(false);
         setAmountTendered(0);
         setPaymentMethod('Espèces');
+        setMomoOperator('');
+        setMomoNumber('');
         setLastSale(null);
         setIsReceiptModalOpen(false);
         try {
@@ -238,8 +237,12 @@ const PosPage: React.FC = () => {
             setError("Impossible de finaliser la vente. Données manquantes.");
             return;
         }
+
+        if (paymentMethod === 'Mobile Money' && (!momoOperator || !momoNumber)) {
+            setError("Opérateur et numéro requis pour Mobile Money.");
+            return;
+        }
         
-        // POS Credit check
         const selectedCustomer = customers.find(c => c.id === selectedCustomerId);
         if (selectedCustomer?.isCreditLimited) {
             const projectedDebt = customerBalance + (cartTotal - amountTendered);
@@ -252,7 +255,7 @@ const PosPage: React.FC = () => {
 
         setError(null);
         
-        const saleData: Omit<Sale, 'id'> = {
+        const saleData: any = {
             referenceNumber: `${settings.saleInvoicePrefix || 'POS-'}${Date.now()}`,
             date: new Date().toISOString(),
             customerId: selectedCustomerId,
@@ -290,6 +293,22 @@ const PosPage: React.FC = () => {
                 for (const update of updates) transaction.update(update.ref, update.data);
                 const saleRef = doc(collection(db, "sales"));
                 transaction.set(saleRef, saleData as DocumentData);
+
+                if (amountTendered > 0) {
+                    const pData: any = {
+                        saleId: saleRef.id,
+                        date: new Date().toISOString(),
+                        amount: amountTendered,
+                        method: paymentMethod,
+                        createdByUserId: user.uid
+                    };
+                    if (paymentMethod === 'Mobile Money') {
+                        pData.momoOperator = momoOperator;
+                        pData.momoNumber = momoNumber;
+                    }
+                    transaction.set(doc(collection(db, "salePayments")), pData);
+                }
+
                 return saleRef;
             });
             
@@ -304,7 +323,7 @@ const PosPage: React.FC = () => {
 
     const formatCurrency = (v: number) => new Intl.NumberFormat('fr-FR').format(v) + ' FCFA';
     
-    if (loading) return <div>Chargement du Point de Vente...</div>;
+    if (loading) return <div className="p-12 text-center animate-pulse uppercase font-black text-gray-400">Chargement...</div>;
 
     const currentCustomerObj = customers.find(c => c.id === selectedCustomerId);
     const showCreditWarning = currentCustomerObj?.isCreditLimited && (customerBalance + cartTotal) > (currentCustomerObj.creditLimit || 0);
@@ -466,7 +485,7 @@ const PosPage: React.FC = () => {
 
             {/* Payment Modal */}
             <Modal isOpen={isPaymentModalOpen} onClose={() => setIsPaymentModalOpen(false)} title="Paiement & Finalisation">
-                <div className="p-6">
+                <div>
                     {error && <p className="text-red-500 bg-red-100 p-3 rounded-xl mb-6 font-bold text-center text-sm">{error}</p>}
                     <div className="text-center mb-8">
                         <p className="text-xs font-black uppercase text-gray-400 tracking-widest mb-1">Montant de la commande</p>
@@ -474,6 +493,28 @@ const PosPage: React.FC = () => {
                     </div>
                     
                     <div className="space-y-4 mb-8">
+                         <div>
+                            <label className="block text-xs font-black uppercase text-gray-400 mb-2">Méthode de paiement</label>
+                            <div className="grid grid-cols-2 gap-2">
+                                {['Espèces', 'Mobile Money', 'Virement bancaire', 'Autre'].map(m => (
+                                    <button key={m} type="button" onClick={() => { setPaymentMethod(m as PaymentMethod); if(m !== 'Mobile Money') { setMomoOperator(''); setMomoNumber(''); } }} className={`py-2 text-[10px] font-bold uppercase border-2 rounded-xl ${paymentMethod === m ? 'bg-primary-600 text-white border-primary-600' : 'bg-white dark:bg-gray-700 text-gray-500'}`}>{m}</button>
+                                ))}
+                            </div>
+                        </div>
+
+                        {paymentMethod === 'Mobile Money' && (
+                            <div className="grid grid-cols-2 gap-4 animate-in slide-in-from-top-2 duration-300">
+                                <div>
+                                    <label className="block text-xs font-black uppercase text-gray-400 mb-1">Opérateur</label>
+                                    <input type="text" value={momoOperator} onChange={e => setMomoOperator(e.target.value)} placeholder="MTN / Moov" className="w-full p-3 border rounded-xl dark:bg-gray-700 font-bold uppercase" />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-black uppercase text-gray-400 mb-1">Numéro</label>
+                                    <input type="tel" value={momoNumber} onChange={e => setMomoNumber(e.target.value)} placeholder="00000000" className="w-full p-3 border rounded-xl dark:bg-gray-700 font-bold" />
+                                </div>
+                            </div>
+                        )}
+
                         <div>
                             <label className="block text-xs font-black uppercase text-gray-400 mb-1">Somme reçue</label>
                             <input type="number" value={amountTendered} onChange={e => setAmountTendered(Number(e.target.value))} className="w-full p-4 border rounded-2xl dark:bg-gray-700 text-2xl font-black outline-none focus:ring-4 focus:ring-primary-500/20" />
@@ -492,20 +533,22 @@ const PosPage: React.FC = () => {
 
             {/* Receipt Modal */}
              <Modal isOpen={isReceiptModalOpen} onClose={async () => { await resetSale(); }} title="Impression du Reçu">
-                <div className="p-4">
+                <div className="flex flex-col items-center w-full">
                     {lastSale && (
-                        <PosReceipt
-                            ref={receiptRef}
-                            sale={lastSale}
-                            customer={customers.find(c => c.id === lastSale.customerId) || null}
-                            products={products}
-                            companyInfo={settings}
-                            warehouse={warehouses.find(w => w.id === lastSale.warehouseId) || null}
-                        />
+                        <div className="shadow-lg mb-6">
+                            <PosReceipt
+                                ref={receiptRef}
+                                sale={lastSale}
+                                customer={customers.find(c => c.id === lastSale.customerId) || null}
+                                products={products}
+                                companyInfo={settings}
+                                warehouse={warehouses.find(w => w.id === lastSale.warehouseId) || null}
+                            />
+                        </div>
                     )}
-                    <div className="mt-8 flex gap-3">
-                        <button onClick={async () => { await resetSale(); }} className="flex-1 py-3 bg-gray-100 dark:bg-gray-700 rounded-xl font-black text-xs uppercase tracking-widest">Suivant</button>
-                        <button onClick={handlePrint} className="flex-1 py-3 bg-primary-600 text-white rounded-xl font-black text-xs uppercase tracking-widest shadow-lg">Imprimer</button>
+                    <div className="w-full flex gap-3">
+                        <button onClick={async () => { await resetSale(); }} className="flex-1 py-3 bg-gray-100 dark:bg-gray-700 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">Suivant</button>
+                        <button onClick={handlePrint} className="flex-1 py-3 bg-primary-600 text-white rounded-xl font-black text-xs uppercase tracking-widest shadow-lg hover:bg-primary-700 transition-colors">Imprimer</button>
                     </div>
                 </div>
             </Modal>

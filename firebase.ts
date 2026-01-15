@@ -1,11 +1,10 @@
-
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCxjlbmMPV5o4yLod5em4RTPJgDJ1lBARg",
+  apiKey: "AIzaSyDz6SoxvDlrRTetdmH8IYHLzk97F9_EqLo",
   authDomain: "fir-stockage-bdf18.firebaseapp.com",
   projectId: "fir-stockage-bdf18",
   storageBucket: "fir-stockage-bdf18.firebasestorage.app",
@@ -13,10 +12,12 @@ const firebaseConfig = {
   appId: "1:727964725105:web:7cc902497db6189e5310d0",
 };
 
-// Initialisation de Firebase (Format Modulaire)
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const storage = getStorage(app);
+// Initialisation unique de l'application Firebase (Pattern Singleton)
+const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
-export { auth, db, storage, firebaseConfig };
+// Exportation des instances de service liées explicitement à l'instance 'app'
+export const db = getFirestore(app);
+export const auth = getAuth(app);
+export const storage = getStorage(app);
+
+export { firebaseConfig };

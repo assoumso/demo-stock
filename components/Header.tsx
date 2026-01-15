@@ -4,7 +4,7 @@ import { useAuth } from '../hooks/useAuth';
 import { db } from '../firebase';
 import { collection, getDocs } from 'firebase/firestore';
 import { Sale, Customer } from '../types';
-import { SearchIcon, WarningIcon } from '../constants';
+import { SearchIcon, LogoutIcon } from '../constants';
 import { useNavigate } from 'react-router-dom';
 
 interface HeaderProps {
@@ -117,7 +117,13 @@ const Header: React.FC<HeaderProps> = ({ sidebarOpen, setSidebarOpen }) => {
                         <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-md mt-0.5" style={getRoleBadgeClasses(user.role.name)}>{user.role.name}</span>
                     )}
                 </div>
-                <button onClick={logout} className="text-xs font-black uppercase text-gray-400 hover:text-red-600 transition-colors tracking-widest">Déconnexion</button>
+                <button 
+                    onClick={logout} 
+                    className="p-2 text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-all active:scale-90"
+                    title="Se déconnecter"
+                >
+                    <LogoutIcon className="w-6 h-6" />
+                </button>
             </div>
 
           </div>

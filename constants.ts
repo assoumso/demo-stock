@@ -11,6 +11,12 @@ export const LogoIcon = (props: IconProps) => (
   )
 );
 
+export const LogoutIcon = (props: IconProps) => (
+    React.createElement('svg', { fill: "none", stroke: "currentColor", viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg", ...props },
+        React.createElement('path', { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" })
+    )
+);
+
 // FIX: Replaced JSX with React.createElement to avoid syntax errors in a .ts file.
 export const SearchIcon = (props: IconProps) => (
   React.createElement('svg', { fill: "currentColor", viewBox: "0 0 20 20", ...props },
@@ -77,7 +83,7 @@ export const ReportsIcon = (props: IconProps) => (
 // FIX: Replaced JSX with React.createElement to avoid syntax errors in a .ts file.
 export const UsersIcon = (props: IconProps) => (
     React.createElement('svg', { className: "w-6 h-6", fill: "none", stroke: "currentColor", viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg", ...props },
-        React.createElement('path', { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M15 21v-1a6 6 0 00-1.781-4.121" })
+        React.createElement('path', { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M15 21v-1a6 6 0 00-9-5.197M15 21v-1a6 6 0 00-1.781-4.121" })
     )
 );
 
@@ -295,5 +301,12 @@ export const SparklesIcon = (props: IconProps) => (
 export const WhatsappIcon = (props: IconProps) => (
     React.createElement('svg', { fill: "currentColor", viewBox: "0 0 24 24", ...props },
         React.createElement('path', { d: "M12.04 2C6.58 2 2.13 6.45 2.13 11.91C2.13 13.66 2.59 15.36 3.45 16.86L2.05 22L7.3 20.62C8.75 21.41 10.37 21.82 12.04 21.82C17.5 21.82 21.95 17.37 21.95 11.91C21.95 9.27 20.92 6.78 19.05 4.91C17.18 3.03 14.69 2 12.04 2M12.04 3.67C14.25 3.67 16.31 4.53 17.87 6.09C19.42 7.65 20.28 9.71 20.28 11.91C20.28 16.47 16.65 20.1 12.04 20.1C10.5 20.1 9.04 19.68 7.8 18.96L7.54 18.82L4.31 19.69L5.2 16.54L5.05 16.28C4.26 15 3.8 13.47 3.8 11.91C3.8 7.35 7.43 3.67 12.04 3.67M9.15 7.6C8.95 7.6 8.78 7.64 8.63 7.89C8.49 8.14 8 9.03 8 10.1C8 11.17 8.63 12.19 8.78 12.37C8.93 12.54 10.2 14.83 12.47 15.76C14.74 16.69 14.74 16.2 15.09 16.16C15.44 16.12 16.47 15.54 16.72 14.93C16.97 14.32 16.97 13.8 16.92 13.67C16.87 13.54 16.69 13.47 16.44 13.34C16.19 13.22 14.91 12.59 14.68 12.5C14.45 12.41 14.28 12.37 14.1 12.62C13.93 12.87 13.43 13.45 13.28 13.63C13.13 13.8 12.98 13.82 12.73 13.7C12.48 13.57 11.59 13.26 10.54 12.33C9.72 11.6 9.15 10.71 9 10.43C8.85 10.16 8.97 10.02 9.1 9.89C9.22 9.77 9.37 9.57 9.52 9.42C9.67 9.27 9.72 9.15 9.82 8.95C9.92 8.75 9.87 8.58 9.8 8.45C9.73 8.33 9.25 7.7 9.15 7.6Z" })
+    )
+);
+
+// FIX: Added missing CheckIcon to resolve export error in PaymentsPage.tsx
+export const CheckIcon = (props: IconProps) => (
+    React.createElement('svg', { fill: "none", stroke: "currentColor", viewBox: "0 0 24 24", xmlns: "http://www.w3.org/2000/svg", ...props },
+        React.createElement('path', { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M5 13l4 4L19 7" })
     )
 );

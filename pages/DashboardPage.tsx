@@ -4,7 +4,7 @@ import { useAuth } from '../hooks/useAuth';
 import { db } from '../firebase';
 import { collection, getDocs, query, orderBy } from 'firebase/firestore';
 import { Sale, Customer, Product, Warehouse } from '../types';
-import { WarningIcon, TrendingUpIcon, CustomersIcon, WarehouseIcon, ChartBarIcon, SparklesIcon } from '../constants';
+import { WarningIcon, TrendingUpIcon, CustomersIcon, WarehouseIcon, ChartBarIcon, SparklesIcon, ProductsIcon, PaymentIcon } from '../constants';
 import { useNavigate } from 'react-router-dom';
 
 const DashboardPage: React.FC = () => {
@@ -42,320 +42,149 @@ const DashboardPage: React.FC = () => {
 
   const formatCurrency = (value: number) => new Intl.NumberFormat('fr-FR').format(value) + ' FCFA';
 
-  // Dictionnaire de thèmes avec classes Tailwind explicites pour éviter les erreurs de purge
-  const THEMES: Record<string, any> = {
-    amber: {
-      card: "bg-amber-100 dark:bg-amber-900/30 border-amber-300 dark:border-amber-700",
-      text: "text-amber-700 dark:text-amber-300",
-      heading: "text-amber-900 dark:text-amber-100",
-      bar: "bg-amber-500",
-      badge: "bg-amber-200 dark:bg-amber-800 text-amber-900 dark:text-amber-100",
-      accent: "bg-white/50 dark:bg-black/20 border-amber-200 dark:border-amber-800"
-    },
-    blue: {
-      card: "bg-blue-100 dark:bg-blue-900/30 border-blue-300 dark:border-blue-700",
-      text: "text-blue-700 dark:text-blue-300",
-      heading: "text-blue-900 dark:text-blue-100",
-      bar: "bg-blue-500",
-      badge: "bg-blue-200 dark:bg-blue-800 text-blue-900 dark:text-blue-100",
-      accent: "bg-white/50 dark:bg-black/20 border-blue-200 dark:border-blue-800"
-    },
-    emerald: {
-      card: "bg-emerald-100 dark:bg-emerald-900/30 border-emerald-300 dark:border-emerald-700",
-      text: "text-emerald-700 dark:text-emerald-300",
-      heading: "text-emerald-900 dark:text-emerald-100",
-      bar: "bg-emerald-500",
-      badge: "bg-emerald-200 dark:bg-emerald-800 text-emerald-900 dark:text-emerald-100",
-      accent: "bg-white/50 dark:bg-black/20 border-emerald-200 dark:border-emerald-800"
-    },
-    rose: {
-      card: "bg-rose-100 dark:bg-rose-900/30 border-rose-300 dark:border-rose-700",
-      text: "text-rose-700 dark:text-rose-300",
-      heading: "text-rose-900 dark:text-rose-100",
-      bar: "bg-rose-500",
-      badge: "bg-rose-200 dark:bg-rose-800 text-rose-900 dark:text-rose-100",
-      accent: "bg-white/50 dark:bg-black/20 border-rose-200 dark:border-rose-800"
-    },
-    purple: {
-      card: "bg-purple-100 dark:bg-purple-900/30 border-purple-300 dark:border-purple-700",
-      text: "text-purple-700 dark:text-purple-300",
-      heading: "text-purple-900 dark:text-purple-100",
-      bar: "bg-purple-500",
-      badge: "bg-purple-200 dark:bg-purple-800 text-purple-900 dark:text-purple-100",
-      accent: "bg-white/50 dark:bg-black/20 border-purple-200 dark:border-purple-800"
-    },
-    indigo: {
-      card: "bg-indigo-100 dark:bg-indigo-900/30 border-indigo-300 dark:border-indigo-700",
-      text: "text-indigo-700 dark:text-indigo-300",
-      heading: "text-indigo-900 dark:text-indigo-100",
-      bar: "bg-indigo-500",
-      badge: "bg-indigo-200 dark:bg-indigo-800 text-indigo-900 dark:text-indigo-100",
-      accent: "bg-white/50 dark:bg-black/20 border-indigo-200 dark:border-indigo-800"
-    },
-    cyan: {
-      card: "bg-cyan-100 dark:bg-cyan-900/30 border-cyan-300 dark:border-cyan-700",
-      text: "text-cyan-700 dark:text-cyan-300",
-      heading: "text-cyan-900 dark:text-cyan-100",
-      bar: "bg-cyan-500",
-      badge: "bg-cyan-200 dark:bg-cyan-800 text-cyan-900 dark:text-cyan-100",
-      accent: "bg-white/50 dark:bg-black/20 border-cyan-200 dark:border-cyan-800"
-    },
-    orange: {
-      card: "bg-orange-100 dark:bg-orange-900/30 border-orange-300 dark:border-orange-700",
-      text: "text-orange-700 dark:text-orange-300",
-      heading: "text-orange-900 dark:text-orange-100",
-      bar: "bg-orange-500",
-      badge: "bg-orange-200 dark:bg-orange-800 text-orange-900 dark:text-orange-100",
-      accent: "bg-white/50 dark:bg-black/20 border-orange-200 dark:border-orange-800"
-    }
-  };
-
-  const userVisibleWarehouses = useMemo(() => {
-    if (!user) return [];
-    if (user.role?.name.toLowerCase().includes('admin')) return warehouses;
-    return warehouses.filter(wh => user.warehouseIds?.includes(wh.id));
-  }, [user, warehouses]);
-
-  const userVisibleSales = useMemo(() => {
-    if (!user || !user.role) return [];
-    if (user.role.name.toLowerCase().includes('admin')) return sales;
-    const assignedWarehouseIds = user.warehouseIds || [];
-    return sales.filter(sale => assignedWarehouseIds.includes(sale.warehouseId));
-  }, [user, sales]);
-
-  const warehouseStats = useMemo(() => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const otherThemesKeys = ['blue', 'emerald', 'rose', 'purple', 'indigo', 'cyan', 'orange'];
-    let colorIndex = 0;
-
-    return userVisibleWarehouses.map(wh => {
-        let totalValue = 0;
-        let totalItems = 0;
-        let dailyVendu = 0;
-        let dailyBenefice = 0;
-
-        // Calcul Stock
-        products.forEach(p => {
-            if (p.type === 'service') return;
-            const stockLevel = p.stockLevels?.find(sl => sl.warehouseId === wh.id);
-            if (stockLevel && stockLevel.quantity > 0) {
-                totalValue += (stockLevel.quantity * (p.cost || 0));
-                totalItems += stockLevel.quantity;
-            }
-        });
-
-        // Calcul Ventes/Profit du jour
-        userVisibleSales.forEach(sale => {
-            if (sale.warehouseId !== wh.id) return;
-            const saleDate = new Date(sale.date);
-            if (saleDate >= today) {
-                dailyVendu += sale.grandTotal;
-                sale.items.forEach(item => {
-                    const product = products.find(p => p.id === item.productId);
-                    if (product) {
-                        dailyBenefice += (item.price - (product.cost || 0)) * item.quantity;
-                    }
-                });
-            }
-        });
-
-        // Attribution du Thème
-        let themeKey = 'amber';
-        if (!wh.isMain) {
-          // Si une couleur est définie en base, on l'utilise, sinon on cycle
-          themeKey = wh.color || otherThemesKeys[colorIndex % otherThemesKeys.length];
-          colorIndex++;
-        }
-
-        return { 
-          ...wh, 
-          totalValue, 
-          totalItems, 
-          dailyVendu, 
-          dailyBenefice,
-          theme: THEMES[themeKey] || THEMES.blue
-        };
-    }).sort((a, b) => (a.isMain ? -1 : b.isMain ? 1 : b.totalValue - a.totalValue));
-  }, [userVisibleWarehouses, products, userVisibleSales]);
-
-  const globalStockValue = useMemo(() => warehouseStats.reduce((sum, wh) => sum + wh.totalValue, 0), [warehouseStats]);
-
   const stats = useMemo(() => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const todaysSales = userVisibleSales.filter(s => new Date(s.date) >= today);
-    return {
-      salesToday: todaysSales.reduce((sum, sale) => sum + sale.grandTotal, 0),
-      totalRevenue: userVisibleSales.reduce((sum, sale) => sum + (sale.paidAmount || 0), 0),
-      totalSales: userVisibleSales.length,
-      activeCustomers: new Set(userVisibleSales.map(s => s.customerId)).size
-    };
-  }, [userVisibleSales]);
+    const last7Days = [...Array(7)].map((_, i) => {
+        const d = new Date();
+        d.setDate(d.getDate() - (6 - i));
+        d.setHours(0,0,0,0);
+        return d;
+    });
 
-  if (loading) return <div className="p-24 text-center text-gray-400 font-black uppercase animate-pulse">Initialisation du Dashboard...</div>
+    const dailyRevenue = last7Days.map(date => {
+        const dayTotal = sales
+            .filter(s => new Date(s.date).toDateString() === date.toDateString())
+            .reduce((sum, s) => sum + s.grandTotal, 0);
+        return { label: date.toLocaleDateString('fr-FR', { weekday: 'short' }), value: dayTotal };
+    });
+
+    const maxDaily = Math.max(...dailyRevenue.map(d => d.value), 1);
+
+    const productPerf: Record<string, { name: string, qty: number, rev: number }> = {};
+    const customerPerf: Record<string, { name: string, total: number, debt: number }> = {};
+
+    sales.forEach(sale => {
+        if (!customerPerf[sale.customerId]) {
+            const c = customers.find(cust => cust.id === sale.customerId);
+            customerPerf[sale.customerId] = { name: c?.name || 'Passage', total: 0, debt: 0 };
+        }
+        customerPerf[sale.customerId].total += sale.grandTotal;
+        customerPerf[sale.customerId].debt += (sale.grandTotal - sale.paidAmount);
+
+        sale.items.forEach(item => {
+            if (!productPerf[item.productId]) {
+                const p = products.find(prod => prod.id === item.productId);
+                productPerf[item.productId] = { name: p?.name || 'Inconnu', qty: 0, rev: 0 };
+            }
+            productPerf[item.productId].qty += item.quantity;
+            productPerf[item.productId].rev += item.subtotal;
+        });
+    });
+
+    const topProducts = Object.values(productPerf).sort((a, b) => b.qty - a.qty).slice(0, 5);
+    const topCustomers = Object.values(customerPerf).sort((a, b) => b.total - a.total).slice(0, 5);
+    const totalRevenue = sales.reduce((sum, s) => sum + s.grandTotal, 0);
+    const totalCollected = sales.reduce((sum, s) => sum + (s.paidAmount || 0), 0);
+    
+    let estProfit = 0;
+    sales.forEach(s => s.items.forEach(i => {
+        const p = products.find(prod => prod.id === i.productId);
+        if(p) estProfit += (i.price - p.cost) * i.quantity;
+    }));
+
+    return { dailyRevenue, maxDaily, topProducts, topCustomers, totalRevenue, totalCollected, estProfit, avgSale: sales.length ? totalRevenue / sales.length : 0 };
+  }, [sales, products, customers]);
+
+  if (loading) return <div className="p-24 text-center text-gray-400 font-black uppercase animate-pulse">Chargement du tableau de bord...</div>
 
   return (
-    <div className="space-y-8">
-      <header className="flex justify-between items-end px-2">
+    <div className="space-y-10 pb-20">
+      <header className="flex flex-col md:flex-row justify-between items-start md:items-end px-2 gap-4">
         <div>
-            <h1 className="text-3xl font-black text-gray-900 dark:text-white uppercase tracking-tight">Tableau de bord</h1>
-            <p className="text-gray-500 dark:text-gray-400">Bienvenue au centre de contrôle, <span className="text-primary-600 font-bold">{user?.displayName || user?.username}</span>!</p>
-        </div>
-        <div className="text-right hidden sm:block">
-            <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Date</p>
-            <p className="font-bold text-gray-700 dark:text-gray-300">{new Date().toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+            <h1 className="text-4xl font-black text-gray-900 dark:text-white uppercase tracking-tight leading-none">Tableau de bord</h1>
+            <p className="text-gray-500 dark:text-gray-400 mt-2 font-bold uppercase text-xs tracking-widest">Performances globales</p>
         </div>
       </header>
       
-      {/* KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-        <div className="bg-white dark:bg-gray-800 shadow-xl rounded-[2rem] p-6 border border-gray-100 dark:border-gray-700">
-          <div className="flex justify-between items-start mb-4">
-              <div className="p-2 bg-green-50 dark:bg-green-900/20 rounded-xl text-green-600"><TrendingUpIcon className="w-6 h-6"/></div>
-              <span className="text-[10px] font-black text-green-500 uppercase">Cumul</span>
-          </div>
-          <p className="text-[10px] font-black uppercase text-gray-400 tracking-widest mb-1">Encaissements Totaux</p>
-          <p className="text-2xl font-black text-gray-900 dark:text-white">{formatCurrency(stats.totalRevenue)}</p>
+        <div className="bg-white dark:bg-gray-800 shadow-xl rounded-[2rem] p-6 border-b-4 border-primary-500">
+          <p className="text-[10px] font-black uppercase text-gray-400 mb-1">Total Encaissé</p>
+          <p className="text-2xl font-black text-gray-900 dark:text-white">{formatCurrency(stats.totalCollected)}</p>
+          <div className="flex items-center mt-2 text-[10px] font-black uppercase text-green-500"><TrendingUpIcon className="w-3 h-3 mr-1"/> Cash réel</div>
         </div>
-
-        <div className="bg-white dark:bg-gray-800 shadow-xl rounded-[2rem] p-6 border border-gray-100 dark:border-gray-700">
-          <div className="flex justify-between items-start mb-4">
-              <div className="p-2 bg-blue-50 dark:bg-blue-900/20 rounded-xl text-blue-600"><ChartBarIcon className="w-6 h-6"/></div>
-              <span className="text-[10px] font-black text-blue-500 uppercase">Volume</span>
-          </div>
-          <p className="text-[10px] font-black uppercase text-gray-400 tracking-widest mb-1">Transactions Ventes</p>
-          <p className="text-2xl font-black text-gray-900 dark:text-white">{stats.totalSales}</p>
+        <div className="bg-white dark:bg-gray-800 shadow-xl rounded-[2rem] p-6 border-b-4 border-red-500">
+          <p className="text-[10px] font-black uppercase text-gray-400 mb-1">Reste à Recouvrer</p>
+          <p className="text-2xl font-black text-red-600">{formatCurrency(stats.totalRevenue - stats.totalCollected)}</p>
+          <div className="flex items-center mt-2 text-[10px] font-black uppercase text-red-400"><WarningIcon className="w-3 h-3 mr-1"/> Créances</div>
         </div>
-
-        <div className="bg-white dark:bg-gray-800 shadow-xl rounded-[2rem] p-6 border border-gray-100 dark:border-gray-700">
-          <div className="flex justify-between items-start mb-4">
-              <div className="p-2 bg-primary-50 dark:bg-primary-900/20 rounded-xl text-primary-600"><SparklesIcon className="w-6 h-6"/></div>
-              <span className="text-[10px] font-black text-primary-500 uppercase">Aujourd'hui</span>
-          </div>
-          <p className="text-[10px] font-black uppercase text-gray-400 tracking-widest mb-1">Ventes Globales Jour</p>
-          <p className="text-2xl font-black text-primary-600">{formatCurrency(stats.salesToday)}</p>
+        <div className="bg-white dark:bg-gray-800 shadow-xl rounded-[2rem] p-6 border-b-4 border-green-500">
+          <p className="text-[10px] font-black uppercase text-gray-400 mb-1">Bénéfice Brut Est.</p>
+          <p className="text-2xl font-black text-green-600">{formatCurrency(stats.estProfit)}</p>
+          <div className="flex items-center mt-2 text-[10px] font-black uppercase text-green-500"><SparklesIcon className="w-3 h-3 mr-1"/> Estimé</div>
         </div>
-
-        <div className="bg-white dark:bg-gray-800 shadow-xl rounded-[2rem] p-6 border border-gray-100 dark:border-gray-700">
-          <div className="flex justify-between items-start mb-4">
-              <div className="p-2 bg-gray-50 dark:bg-gray-700 rounded-xl text-gray-600"><CustomersIcon className="w-6 h-6"/></div>
-              <span className="text-[10px] font-black text-gray-400 uppercase">Portefeuille</span>
-          </div>
-          <p className="text-[10px] font-black uppercase text-gray-400 tracking-widest mb-1">Clients Servis</p>
-          <p className="text-2xl font-black text-gray-900 dark:text-white">{stats.activeCustomers}</p>
+        <div className="bg-white dark:bg-gray-800 shadow-xl rounded-[2rem] p-6 border-b-4 border-blue-500">
+          <p className="text-[10px] font-black uppercase text-gray-400 mb-1">Panier Moyen</p>
+          <p className="text-2xl font-black text-blue-600">{formatCurrency(stats.avgSale)}</p>
+          <div className="flex items-center mt-2 text-[10px] font-black uppercase text-blue-400"><ChartBarIcon className="w-3 h-3 mr-1"/> {sales.length} ventes</div>
         </div>
       </div>
 
-      {/* WAREHOUSE CARDS SECTION */}
-      <section className="space-y-6">
-          <div className="flex items-center space-x-3 px-2">
-            <div className="bg-gray-900 text-white p-2 rounded-xl"><WarehouseIcon className="w-5 h-5"/></div>
-            <h2 className="text-xl font-black uppercase tracking-tight text-gray-900 dark:text-white">Performance par Site</h2>
-          </div>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-              {warehouseStats.map(wh => {
-                  const percentage = globalStockValue > 0 ? (wh.totalValue / globalStockValue) * 100 : 0;
-                  const theme = wh.theme;
-                  
-                  return (
-                      <div key={wh.id} className={`group flex flex-col rounded-[2.5rem] border-2 shadow-sm transition-all hover:shadow-2xl hover:-translate-y-1 ${theme.card}`}>
-                          {/* Top Section: Identity and Stock */}
-                          <div className="p-7">
-                              <div className="flex justify-between items-start mb-6">
-                                  <div className="min-w-0">
-                                    <h4 className={`text-base font-black uppercase tracking-tight truncate ${theme.heading}`}>{wh.name}</h4>
-                                    <p className={`text-[9px] font-bold uppercase tracking-widest mt-1 opacity-70 ${theme.text}`}>{wh.location || 'Localisation non définie'}</p>
-                                  </div>
-                                  <span className={`text-[10px] font-black px-3 py-1 rounded-2xl shadow-sm border border-white/50 ${theme.badge}`}>
-                                    {wh.totalItems.toLocaleString()} ART.
-                                  </span>
-                              </div>
-                              
-                              <div className="mb-6">
-                                  <p className={`text-[10px] font-black uppercase tracking-widest mb-1 opacity-60 ${theme.text}`}>Capital Stocké</p>
-                                  <p className={`text-2xl font-black ${theme.heading}`}>{formatCurrency(wh.totalValue)}</p>
-                              </div>
-
-                              <div className="space-y-2">
-                                <div className="w-full bg-white/40 dark:bg-black/20 h-2.5 rounded-full overflow-hidden shadow-inner border border-white/30">
-                                    <div 
-                                        className={`${theme.bar} h-full transition-all duration-1000 shadow-md`} 
-                                        style={{ width: `${percentage}%` }}
-                                    ></div>
-                                </div>
-                                <div className="flex justify-between items-center text-[9px] font-black opacity-60 uppercase tracking-tighter">
-                                    <span className={theme.text}>{percentage.toFixed(1)}% de la valeur totale</span>
-                                    {wh.isMain && <span className="bg-gray-900 text-white px-2 py-0.5 rounded-lg">SIÈGE</span>}
-                                </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <div className="lg:col-span-2 bg-white dark:bg-gray-800 shadow-2xl rounded-[2.5rem] p-8 border dark:border-gray-700">
+              <h3 className="text-lg font-black uppercase tracking-tight flex items-center mb-8"><ChartBarIcon className="w-5 h-5 mr-3 text-primary-500"/>Activité des 7 derniers jours</h3>
+              <div className="flex items-end justify-between h-48 gap-2">
+                  {stats.dailyRevenue.map((day, idx) => (
+                      <div key={idx} className="flex-1 flex flex-col items-center group">
+                          <div className="relative w-full flex justify-center items-end h-32">
+                              <div className="w-full sm:w-12 bg-primary-500 rounded-t-xl transition-all duration-500 group-hover:bg-primary-600" style={{ height: `${(day.value / stats.maxDaily) * 100}%` }}>
+                                  <div className="absolute -top-8 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity bg-gray-900 text-white text-[10px] px-2 py-1 rounded font-black whitespace-nowrap">{formatCurrency(day.value)}</div>
                               </div>
                           </div>
-
-                          {/* REAL-TIME DAILY STATS (THE FOOTER) */}
-                          <div className={`mt-auto p-7 pt-6 rounded-b-[2.5rem] border-t-2 border-dashed ${theme.accent}`}>
-                              <div className="flex items-center space-x-2 mb-4">
-                                  <SparklesIcon className={`w-4 h-4 ${theme.text} animate-pulse`} />
-                                  <span className={`text-[11px] font-black uppercase tracking-widest ${theme.text}`}>Activité du Jour</span>
-                              </div>
-                              
-                              <div className="grid grid-cols-2 gap-6">
-                                  <div className="space-y-1">
-                                      <p className="text-[9px] font-black text-gray-500 dark:text-gray-400 uppercase tracking-widest">Vendu</p>
-                                      <p className={`text-base font-black ${theme.heading}`}>{formatCurrency(wh.dailyVendu)}</p>
-                                  </div>
-                                  <div className="text-right space-y-1">
-                                      <p className="text-[9px] font-black text-gray-500 dark:text-gray-400 uppercase tracking-widest">Bénéfice</p>
-                                      <p className={`text-base font-black text-green-600 dark:text-green-400`}>+{formatCurrency(wh.dailyBenefice)}</p>
-                                  </div>
-                              </div>
-                          </div>
+                          <span className="mt-4 text-[10px] font-black text-gray-400 uppercase">{day.label}</span>
                       </div>
-                  );
-              })}
+                  ))}
+              </div>
           </div>
-      </section>
+          <div className="bg-gray-900 text-white shadow-2xl rounded-[2.5rem] p-8 relative overflow-hidden">
+              <h3 className="text-lg font-black uppercase tracking-tight mb-8">Flux de Trésorerie</h3>
+              <div className="space-y-6 relative z-10">
+                  <div>
+                      <div className="flex justify-between text-[10px] font-black uppercase text-gray-400 mb-2"><span>Recouvré</span><span className="text-green-400">{((stats.totalCollected/stats.totalRevenue)*100).toFixed(1)}%</span></div>
+                      <div className="h-4 bg-gray-800 rounded-full overflow-hidden"><div className="h-full bg-green-500" style={{ width: `${(stats.totalCollected/stats.totalRevenue)*100}%` }}></div></div>
+                  </div>
+                  <div>
+                      <div className="flex justify-between text-[10px] font-black uppercase text-gray-400 mb-2"><span>En attente</span><span className="text-red-400">{(((stats.totalRevenue-stats.totalCollected)/stats.totalRevenue)*100).toFixed(1)}%</span></div>
+                      <div className="h-4 bg-gray-800 rounded-full overflow-hidden"><div className="h-full bg-red-500" style={{ width: `${((stats.totalRevenue-stats.totalCollected)/stats.totalRevenue)*100}%` }}></div></div>
+                  </div>
+                  <div className="pt-6 border-t border-gray-800"><p className="text-[10px] font-black text-gray-500 uppercase mb-1">C.A Global</p><p className="text-3xl font-black text-white">{formatCurrency(stats.totalRevenue)}</p></div>
+              </div>
+          </div>
+      </div>
 
-      {/* RECENT SALES LIST */}
-      <div className="bg-white dark:bg-gray-800 shadow-xl rounded-[2.5rem] overflow-hidden border border-gray-100 dark:border-gray-700">
-        <div className="p-6 border-b dark:border-gray-700 flex justify-between items-center bg-gray-50/50 dark:bg-gray-900/20">
-            <div className="flex items-center space-x-3">
-              <div className="bg-blue-100 dark:bg-blue-900/30 text-blue-600 p-2 rounded-xl"><ChartBarIcon className="w-5 h-5"/></div>
-              <h3 className="text-lg font-black uppercase tracking-tight text-gray-900 dark:text-white">Flux des ventes</h3>
-            </div>
-            <button onClick={() => navigate('/sales')} className="text-xs font-bold text-primary-600 hover:underline uppercase tracking-widest">Tout l'historique</button>
-        </div>
-        <div className="overflow-x-auto">
-            <table className="min-w-full">
-                <thead className="bg-gray-50/80 dark:bg-gray-900/50">
-                    <tr>
-                        <th className="px-8 py-4 text-left text-[10px] font-black uppercase text-gray-400 tracking-widest">Référence / Date</th>
-                        <th className="px-8 py-4 text-left text-[10px] font-black uppercase text-gray-400 tracking-widest">Paiement</th>
-                        <th className="px-8 py-4 text-right text-[10px] font-black uppercase text-gray-400 tracking-widest">Montant</th>
-                    </tr>
-                </thead>
-                <tbody className="divide-y dark:divide-gray-700">
-                    {userVisibleSales.slice(0, 6).map(sale => (
-                        <tr key={sale.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
-                            <td className="px-8 py-5">
-                                <p className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-tighter">{sale.referenceNumber}</p>
-                                <p className="text-[10px] text-gray-400 font-bold">{new Date(sale.date).toLocaleDateString('fr-FR')}</p>
-                            </td>
-                            <td className="px-8 py-5">
-                                <span className={`px-3 py-1 rounded-full font-black uppercase text-[9px] tracking-widest ${sale.paymentStatus === 'Payé' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>
-                                    {sale.paymentStatus}
-                                </span>
-                            </td>
-                            <td className="px-8 py-5 text-right text-base font-black text-gray-900 dark:text-white">{formatCurrency(sale.grandTotal)}</td>
-                        </tr>
-                    ))}
-                    {userVisibleSales.length === 0 && (
-                      <tr><td colSpan={3} className="py-12 text-center text-gray-400 italic">Aucune vente enregistrée.</td></tr>
-                    )}
-                </tbody>
-            </table>
-        </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          <div className="bg-white dark:bg-gray-800 shadow-xl rounded-[2.5rem] p-8 border dark:border-gray-700">
+              <h3 className="text-lg font-black uppercase mb-6 flex items-center"><ProductsIcon className="w-5 h-5 mr-3 text-orange-500"/>Top 5 Produits vendus</h3>
+              <div className="space-y-4">
+                  {stats.topProducts.map((p, i) => (
+                      <div key={i} className="flex items-center p-4 bg-gray-50 dark:bg-gray-900/50 rounded-2xl">
+                          <div className="w-10 h-10 bg-orange-100 text-orange-600 rounded-xl flex items-center justify-center font-black mr-4">{i+1}</div>
+                          <div className="flex-1 min-w-0"><p className="text-sm font-black uppercase truncate">{p.name}</p><p className="text-[10px] text-gray-400 font-bold">{p.qty} unités vendues</p></div>
+                          <p className="text-sm font-black text-primary-600">{formatCurrency(p.rev)}</p>
+                      </div>
+                  ))}
+              </div>
+          </div>
+          <div className="bg-white dark:bg-gray-800 shadow-xl rounded-[2.5rem] p-8 border dark:border-gray-700">
+              <h3 className="text-lg font-black uppercase mb-6 flex items-center"><CustomersIcon className="w-5 h-5 mr-3 text-blue-500"/>Top 5 Meilleurs Clients</h3>
+              <div className="space-y-4">
+                  {stats.topCustomers.map((c, i) => (
+                      <div key={i} className="flex items-center p-4 bg-gray-50 dark:bg-gray-900/50 rounded-2xl">
+                          <div className="w-10 h-10 bg-blue-100 text-blue-600 rounded-xl flex items-center justify-center font-black mr-4">{i+1}</div>
+                          <div className="flex-1 min-w-0"><p className="text-sm font-black uppercase truncate">{c.name}</p><p className="text-[10px] text-gray-400 font-bold">Total commandé</p></div>
+                          <div className="text-right"><p className="text-sm font-black">{formatCurrency(c.total)}</p>{c.debt > 0 && <p className="text-[9px] font-black text-red-500 uppercase">Dette: {formatCurrency(c.debt)}</p>}</div>
+                      </div>
+                  ))}
+              </div>
+          </div>
       </div>
     </div>
   );

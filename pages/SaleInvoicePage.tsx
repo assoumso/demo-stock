@@ -120,9 +120,9 @@ const SaleInvoicePage: React.FC = () => {
     const [customer, setCustomer] = useState<Customer | undefined>(undefined);
     const [allProducts, setAllProducts] = useState<Product[]>([]);
      const [companyInfo, setCompanyInfo] = useState<CompanyInfo>({
-        name: 'ETS-DEMO',
-        address: '',
-        phone: '',
+        name: 'ETS COULIBALY & FRERES',
+        address: 'Korhogo, Abidjan , lagune, BP 287, Côte d\'ivoire',
+        phone: '05 05 18 22 16 / 07 08 34 13 22',
         email: '',
         contact: '',
         rccm: '',
@@ -161,14 +161,14 @@ const SaleInvoicePage: React.FC = () => {
                  if (settingsSnap.exists()) {
                     const settingsData = settingsSnap.data() as AppSettings;
                     setCompanyInfo({
-                        name: settingsData.companyName || 'ETS-DEMO',
-                        address: settingsData.companyAddress || '',
-                        phone: settingsData.companyPhone || '',
+                        name: settingsData.companyName || 'ETS COULIBALY & FRERES',
+                        address: settingsData.companyAddress || 'Korhogo, Abidjan , lagune, BP 287, Côte d\'ivoire',
+                        phone: settingsData.companyPhone || '05 05 18 22 16 / 07 08 34 13 22',
                         email: settingsData.companyEmail,
                         contact: settingsData.companyContact,
                         rccm: settingsData.companyRCCM,
                         currencySymbol: settingsData.currencySymbol || 'FCFA',
-                        logoUrl: settingsData.companyLogoUrl,
+                        logoUrl: settingsData.companyLogoUrl || '/logo.png',
                         footerText: settingsData.invoiceFooterText,
                     });
                 }

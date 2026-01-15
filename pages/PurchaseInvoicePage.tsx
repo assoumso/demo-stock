@@ -171,9 +171,9 @@ const PurchaseInvoicePage: React.FC = () => {
                 if (settingsSnap.exists()) {
                     const settingsData = settingsSnap.data() as AppSettings;
                     setCompanyInfo({
-                        name: settingsData.companyName || 'ETS-DEMO',
-                        address: settingsData.companyAddress || '',
-                        phone: settingsData.companyPhone || '',
+                        name: settingsData.companyName || 'ETS COULIBALY & FRERES',
+                        address: settingsData.companyAddress || 'Korhogo, Abidjan , lagune, BP 287, Côte d\'ivoire',
+                        phone: settingsData.companyPhone || '05 05 18 22 16 / 07 08 34 13 22',
                         email: settingsData.companyEmail,
                         contact: settingsData.companyContact,
                         rccm: settingsData.companyRCCM,

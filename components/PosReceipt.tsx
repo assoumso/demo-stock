@@ -22,10 +22,10 @@ const PosReceipt = React.forwardRef<HTMLDivElement, PosReceiptProps>(
     return (
         <div ref={ref} className="bg-white text-black p-4 font-mono text-xs" style={{ width: '80mm' }}>
             <div className="text-center">
-                {companyInfo.companyLogoUrl && <img src={companyInfo.companyLogoUrl} alt="Logo" className="mx-auto h-12 w-auto mb-2"/>}
-                <h2 className="text-lg font-bold">{companyInfo.companyName}</h2>
-                <p>{companyInfo.companyAddress}</p>
-                <p>{companyInfo.companyPhone}</p>
+                <img src={companyInfo.companyLogoUrl || '/logo.png'} alt="Logo" className="mx-auto h-16 w-auto mb-2 object-contain"/>
+                <h2 className="text-lg font-bold">{companyInfo.companyName || 'ETS COULIBALY & FRERES'}</h2>
+                <p>{companyInfo.companyAddress || 'Korhogo, Abidjan , lagune, BP 287, Côte d\'ivoire'}</p>
+                <p>{companyInfo.companyPhone || '05 05 18 22 16 / 07 08 34 13 22'}</p>
             </div>
             
             <hr className="my-2 border-dashed border-black"/>
