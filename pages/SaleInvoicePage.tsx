@@ -126,7 +126,8 @@ const SaleInvoicePage: React.FC = () => {
         email: '',
         contact: '',
         rccm: '',
-        currencySymbol: 'FCFA'
+        currencySymbol: 'FCFA',
+        logoUrl: '/logo.png'
     });
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);

@@ -178,7 +178,7 @@ const PurchaseInvoicePage: React.FC = () => {
                         contact: settingsData.companyContact,
                         rccm: settingsData.companyRCCM,
                         currencySymbol: settingsData.currencySymbol || 'FCFA',
-                        logoUrl: settingsData.companyLogoUrl,
+                        logoUrl: settingsData.companyLogoUrl || '/logo.png',
                         footerText: settingsData.invoiceFooterText,
                     });
                 }

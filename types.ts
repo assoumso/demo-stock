@@ -59,6 +59,7 @@ export interface Customer extends BasePartner {
 export interface Supplier extends BasePartner {
   openingBalance?: number;
   openingBalanceDate?: string;
+  creditBalance?: number; // Solde Avoir (argent que le fournisseur nous doit)
 }
 
 /**

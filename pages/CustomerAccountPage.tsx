@@ -596,9 +596,10 @@ const CustomerAccountPage: React.FC = () => {
             <div ref={printRef} className="bg-white dark:bg-gray-800 rounded-3xl shadow-2xl overflow-hidden border dark:border-gray-700 p-4 sm:p-10">
                 <div className="hidden print:block mb-10 border-b-2 border-gray-900 pb-6 text-black">
                     <div className="mb-8 text-center">
-                        <h1 className="text-2xl font-black uppercase">ETS COULIBALY & FRERES</h1>
-                        <p className="text-sm">Korhogo, Abidjan , lagune, BP 287, Côte d'ivoire</p>
-                        <p className="text-sm">05 05 18 22 16 / 07 08 34 13 22</p>
+                        <img src={settings?.companyLogoUrl || '/logo.png'} alt="Logo" className="mx-auto h-20 w-auto mb-4 object-contain"/>
+                        <h1 className="text-2xl font-black uppercase">{settings?.companyName || 'ETS COULIBALY & FRERES'}</h1>
+                        <p className="text-sm">{settings?.companyAddress || "Korhogo, Abidjan , lagune, BP 287, Côte d'ivoire"}</p>
+                        <p className="text-sm">{settings?.companyPhone || "05 05 18 22 16 / 07 08 34 13 22"}</p>
                     </div>
                     <h2 className="text-3xl font-black uppercase">{customer?.businessName || customer?.name}</h2>
                     <p className="text-sm font-bold text-gray-500 uppercase tracking-widest">Relevé de compte au {new Date().toLocaleDateString('fr-FR')}</p>
