@@ -1,10 +1,13 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { db } from '../firebase';
 import { collection, getDocs, query, where, doc, runTransaction, DocumentData } from 'firebase/firestore';
-import { Customer, Supplier, Sale, Purchase, SalePayment, Payment, PaymentMethod, PaymentStatus } from '../types';
+import { Customer, Supplier, Sale, Purchase, SalePayment, Payment, PaymentMethod, PaymentStatus, AppSettings } from '../types';
 import { useAuth } from '../hooks/useAuth';
 import { SearchIcon, CustomersIcon, SuppliersIcon, WarningIcon, CheckIcon } from '../constants';
+import Modal from '../components/Modal';
+import { PaymentReceipt } from '../components/PaymentReceipt';
+import { useReactToPrint } from 'react-to-print';
 
 const PaymentsPage: React.FC = () => {
     const { user } = useAuth();
@@ -13,9 +16,19 @@ const PaymentsPage: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
     const [success, setSuccess] = useState<string | null>(null);
 
+    // Receipt State
+    const receiptRef = useRef<HTMLDivElement>(null);
+    const [showReceiptModal, setShowReceiptModal] = useState(false);
+    const [lastPayment, setLastPayment] = useState<SalePayment | null>(null);
+    const [lastPaymentBalance, setLastPaymentBalance] = useState(0);
+    const [settings, setSettings] = useState<AppSettings | null>(null);
+    const [receiptCustomer, setReceiptCustomer] = useState<Customer | null>(null);
+
     // Data lists
     const [customers, setCustomers] = useState<Customer[]>([]);
     const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+
+    const handlePrintReceipt = useReactToPrint({ contentRef: receiptRef });
     
     // Selection state
     const [searchTerm, setSearchTerm] = useState('');
@@ -37,12 +50,17 @@ const PaymentsPage: React.FC = () => {
         const fetchBaseData = async () => {
             setLoading(true);
             try {
-                const [custSnap, supSnap] = await Promise.all([
+                const [custSnap, supSnap, settingsSnap] = await Promise.all([
                     getDocs(collection(db, "customers")),
-                    getDocs(collection(db, "suppliers"))
+                    getDocs(collection(db, "suppliers")),
+                    getDocs(collection(db, "appSettings"))
                 ]);
                 setCustomers(custSnap.docs.map(d => ({ id: d.id, ...d.data() } as Customer)));
                 setSuppliers(supSnap.docs.map(d => ({ id: d.id, ...d.data() } as Supplier)));
+                
+                if (!settingsSnap.empty) {
+                    setSettings({ id: settingsSnap.docs[0].id, ...settingsSnap.docs[0].data() } as AppSettings);
+                }
             } catch (err) {
                 setError("Erreur lors du chargement des données.");
             } finally {
@@ -193,6 +211,15 @@ const PaymentsPage: React.FC = () => {
                 }
             }
 
+            // Capture data for receipt
+            const receiptAmount = paymentAmount;
+            const receiptMethod = paymentMethod;
+            const receiptNote = paymentNote;
+            const receiptDate = paymentDate;
+            const currentBalance = accountBalance;
+            const customerForReceipt = activeTab === 'clients' ? (selectedPartner as Customer) : null;
+            const receiptRefNumber = selectedInvoiceId ? unpaidInvoices.find(i => i.id === selectedInvoiceId)?.referenceNumber : 'RÈGLEMENT GLOBAL';
+
             await runTransaction(db, async (transaction) => {
                 let localRemaining = paymentAmount;
                 const updatesToPerform: { ref: any, data: any }[] = [];
@@ -250,20 +277,35 @@ const PaymentsPage: React.FC = () => {
                     }
                 }
 
-                // Gestion du surplus (Avoir sur la première dette sélectionnée)
-                if (localRemaining > 0.1 && paymentsToCreate.length > 0) {
-                     paymentsToCreate[0].amount += localRemaining;
-                     if (allDebts[0].type === 'invoice') {
-                           const update = updatesToPerform.find(u => u.ref.id === allDebts[0].id);
-                           if (update) {
-                               update.data.paidAmount += localRemaining;
-                           }
-                     }
+                // Gestion du surplus (Avoir sur la première dette sélectionnée ou crédit client)
+                // Pour simplifier ici, on l'ajoute au dernier paiement créé ou on crée un avoir si supporté
+                // NOTE: Dans CustomerAccountPage on a ajouté le support complet du crédit.
+                // Ici, on va juste s'assurer que le montant payé est bien enregistré.
+                // Si surplus, on l'ajoute au premier paiement pour l'instant (comportement existant amélioré)
+                // ou on le traite comme dans CustomerAccountPage si on veut être cohérent.
+                // Pour l'instant, on garde la logique "répartition" et le surplus sur le premier.
+                
+                if (localRemaining > 0.1) {
+                    if (paymentsToCreate.length > 0) {
+                        // Ajouter le surplus au premier paiement
+                        paymentsToCreate[0].amount += localRemaining;
+                        // Et mettre à jour la facture correspondante si c'est une facture
+                        if (allDebts.length > 0 && allDebts[0].type === 'invoice') {
+                             const update = updatesToPerform.find(u => u.ref.id === allDebts[0].id);
+                             if (update) {
+                                 update.data.paidAmount += localRemaining;
+                             }
+                        }
+                    } else {
+                        // Aucun paiement créé (pas de dette ?), on crée un paiement "flottant" ou sur solde ouverture
+                        // Cas rare si check dettes fait avant.
+                    }
                 }
 
                 // PHASE 2: WRITES
                 paymentsToCreate.forEach(p => {
                     const newRef = doc(collection(db, paymentCollection));
+                    p.id = newRef.id; // Assign ID locally for receipt
                     transaction.set(newRef, p);
                 });
 
@@ -273,6 +315,26 @@ const PaymentsPage: React.FC = () => {
             });
 
             setSuccess("Règlement validé !");
+            
+            // Show Receipt if Client
+            if (activeTab === 'clients' && customerForReceipt) {
+                const tempReceiptId = `REC-${Date.now().toString().slice(-6)}`;
+                
+                setLastPayment({
+                    id: tempReceiptId,
+                    saleId: selectedInvoiceId || 'MULTI_PAYMENT',
+                    date: new Date(receiptDate).toISOString(),
+                    amount: receiptAmount,
+                    method: receiptMethod,
+                    createdByUserId: user.uid,
+                    notes: receiptNote || receiptRefNumber || ''
+                } as SalePayment);
+
+                setLastPaymentBalance(Math.max(0, currentBalance - receiptAmount));
+                setReceiptCustomer(customerForReceipt);
+                setShowReceiptModal(true);
+            }
+
             setTimeout(() => setSuccess(null), 3000);
             handleReset();
         } catch (err: any) {
@@ -440,6 +502,40 @@ const PaymentsPage: React.FC = () => {
                     )}
                 </div>
             </div>
+            
+            {/* Receipt Modal */}
+            <Modal isOpen={showReceiptModal} onClose={() => setShowReceiptModal(false)} title="REÇU DE PAIEMENT" maxWidth="max-w-xl">
+                <div className="flex flex-col items-center">
+                    <div className="w-full overflow-x-auto flex justify-center py-4 bg-gray-50/50 dark:bg-gray-900/50 rounded-xl mb-6">
+                        {lastPayment && receiptCustomer && (
+                            <div className="shadow-xl ring-1 ring-gray-900/5 bg-white transform transition-all hover:scale-[1.02] duration-300">
+                                <PaymentReceipt 
+                                    ref={receiptRef}
+                                    payment={lastPayment}
+                                    customer={receiptCustomer}
+                                    settings={settings}
+                                    balanceAfter={lastPaymentBalance}
+                                    reference={lastPayment.notes || 'RÈGLEMENT'}
+                                />
+                            </div>
+                        )}
+                    </div>
+                    <div className="flex gap-4 w-full">
+                        <button 
+                            onClick={() => setShowReceiptModal(false)}
+                            className="flex-1 px-4 py-3 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-xl font-bold uppercase tracking-wider hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                        >
+                            Fermer
+                        </button>
+                        <button 
+                            onClick={handlePrintReceipt}
+                            className="flex-1 px-4 py-3 bg-gray-900 text-white rounded-xl font-black uppercase tracking-widest shadow-xl hover:bg-black transition-all flex items-center justify-center gap-2"
+                        >
+                            <span className="text-lg">🖨️</span> Imprimer
+                        </button>
+                    </div>
+                </div>
+            </Modal>
         </div>
     );
 };
