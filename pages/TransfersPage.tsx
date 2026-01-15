@@ -127,7 +127,7 @@ const TransfersPage: React.FC = () => {
                 const toWhIndex = stockLevels.findIndex(sl => sl.warehouseId === toWarehouseId);
 
                 if (fromWhIndex === -1 || stockLevels[fromWhIndex].quantity < quantity) {
-                    throw new Error("Stock insuffisant dans l'entrepôt de départ.");
+                    throw new Error(`Stock insuffisant dans l'entrepôt de départ. Disponible: ${fromWhIndex > -1 ? stockLevels[fromWhIndex].quantity : 0}, Demandé: ${quantity}`);
                 }
                 
                 // Decrease from warehouse

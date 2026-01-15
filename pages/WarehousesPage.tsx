@@ -13,6 +13,7 @@ const COLOR_OPTIONS = [
     { name: 'Vert', value: 'emerald', class: 'bg-emerald-500' },
     { name: 'Violet', value: 'purple', class: 'bg-purple-500' },
     { name: 'Orange', value: 'orange', class: 'bg-orange-500' },
+    { name: 'Jaune', value: 'yellow', class: 'bg-yellow-500' },
     { name: 'Rouge', value: 'red', class: 'bg-red-500' },
     { name: 'Cyan', value: 'cyan', class: 'bg-cyan-500' },
     { name: 'Indigo', value: 'indigo', class: 'bg-indigo-500' },

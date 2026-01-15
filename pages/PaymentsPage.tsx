@@ -167,44 +167,109 @@ const PaymentsPage: React.FC = () => {
             const paymentCollection = activeTab === 'clients' ? 'salePayments' : 'purchasePayments';
             const invoiceIdKey = activeTab === 'clients' ? 'saleId' : 'purchaseId';
 
+            // 1. Préparer la liste de toutes les dettes
+            const allDebts = unpaidInvoices.map(inv => ({
+                id: inv.id,
+                type: inv.id.startsWith('OPENING_BALANCE_') ? 'opening' : 'invoice',
+                remaining: inv.grandTotal - inv.paidAmount,
+                date: inv.date,
+                refNumber: inv.referenceNumber,
+                originalObj: inv
+            })).filter(d => d.remaining > 0.1);
+
+            // 2. Ordonner les dettes : Celle sélectionnée en premier, puis les autres par date
+            allDebts.sort((a, b) => {
+                if (a.id === selectedInvoiceId) return -1;
+                if (b.id === selectedInvoiceId) return 1;
+                return new Date(a.date).getTime() - new Date(b.date).getTime();
+            });
+
+            // 3. Vérifier si le montant total dépasse la dette totale
+            const totalDebt = allDebts.reduce((sum, d) => sum + d.remaining, 0);
+            if (paymentAmount > totalDebt + 10) { 
+                if (!window.confirm(`Le montant saisi (${formatCurrency(paymentAmount)}) est supérieur à la dette totale (${formatCurrency(totalDebt)}). Voulez-vous continuer et créer un avoir pour le surplus ?`)) {
+                    setIsSubmitting(false);
+                    return;
+                }
+            }
+
             await runTransaction(db, async (transaction) => {
-                if (!selectedInvoiceId) throw new Error("Aucune facture à régler sélectionnée.");
+                let localRemaining = paymentAmount;
+                const updatesToPerform: { ref: any, data: any }[] = [];
+                const paymentsToCreate: any[] = [];
 
-                const invoiceRef = doc(db, collectionName, selectedInvoiceId);
-                const invoiceDoc = await transaction.get(invoiceRef);
-                if (!invoiceDoc.exists()) throw new Error("La facture n'existe plus.");
+                // PHASE 1: READS & CALCULS
+                for (const debt of allDebts) {
+                    if (localRemaining <= 0.1) break;
 
-                const invoiceData = invoiceDoc.data() as Sale | Purchase;
-                const newPaidAmount = (invoiceData.paidAmount || 0) + paymentAmount;
-                const remaining = invoiceData.grandTotal - newPaidAmount;
+                    let amountToPayOnThis = 0;
+                    let currentRemaining = 0;
+                    let invoiceRef = null;
+                    let invoiceData = null;
 
-                if (newPaidAmount > invoiceData.grandTotal + 0.1) {
-                    throw new Error(`Le versement dépasse le solde de la facture.`);
+                    if (debt.type === 'opening') {
+                        currentRemaining = debt.remaining; 
+                    } else {
+                        invoiceRef = doc(db, collectionName, debt.id);
+                        const invoiceSnap = await transaction.get(invoiceRef);
+                        if (!invoiceSnap.exists()) continue;
+                        
+                        invoiceData = invoiceSnap.data() as Sale | Purchase;
+                        currentRemaining = invoiceData.grandTotal - invoiceData.paidAmount;
+                    }
+
+                    amountToPayOnThis = Math.min(localRemaining, currentRemaining);
+
+                    if (amountToPayOnThis > 0.1) {
+                        const pData: any = {
+                            [invoiceIdKey]: debt.id,
+                            date: new Date(paymentDate).toISOString(),
+                            amount: amountToPayOnThis,
+                            method: paymentMethod,
+                            createdByUserId: user.uid,
+                            note: (paymentNote || `Règlement global`) + (allDebts.length > 1 && debt.id !== selectedInvoiceId ? ` (Répartition auto: ${debt.refNumber})` : '')
+                        };
+
+                        if (paymentMethod === 'Mobile Money') {
+                            pData.momoOperator = momoOperator;
+                            pData.momoNumber = momoNumber;
+                        }
+
+                        paymentsToCreate.push(pData);
+
+                        if (debt.type === 'invoice' && invoiceRef && invoiceData) {
+                            const newPaid = (invoiceData.paidAmount || 0) + amountToPayOnThis;
+                            const newStatus = (invoiceData.grandTotal - newPaid) <= 0.1 ? 'Payé' : 'Partiel';
+                            updatesToPerform.push({
+                                ref: invoiceRef,
+                                data: { paidAmount: newPaid, paymentStatus: newStatus }
+                            });
+                        }
+
+                        localRemaining -= amountToPayOnThis;
+                    }
                 }
 
-                let newStatus: PaymentStatus = 'Partiel';
-                if (remaining <= 0.1) newStatus = 'Payé';
+                // Gestion du surplus (Avoir sur la première dette sélectionnée)
+                if (localRemaining > 0.1 && paymentsToCreate.length > 0) {
+                     paymentsToCreate[0].amount += localRemaining;
+                     if (allDebts[0].type === 'invoice') {
+                           const update = updatesToPerform.find(u => u.ref.id === allDebts[0].id);
+                           if (update) {
+                               update.data.paidAmount += localRemaining;
+                           }
+                     }
+                }
 
-                transaction.update(invoiceRef, {
-                    paidAmount: newPaidAmount,
-                    paymentStatus: newStatus
+                // PHASE 2: WRITES
+                paymentsToCreate.forEach(p => {
+                    const newRef = doc(collection(db, paymentCollection));
+                    transaction.set(newRef, p);
                 });
 
-                const paymentData: DocumentData = {
-                    [invoiceIdKey]: selectedInvoiceId,
-                    date: new Date(paymentDate).toISOString(),
-                    amount: paymentAmount,
-                    method: paymentMethod,
-                    createdByUserId: user.uid,
-                    note: paymentNote || `Règlement par la page de gestion globale`
-                };
-
-                if (paymentMethod === 'Mobile Money') {
-                    paymentData.momoOperator = momoOperator;
-                    paymentData.momoNumber = momoNumber;
-                }
-
-                transaction.set(doc(collection(db, paymentCollection)), paymentData);
+                updatesToPerform.forEach(u => {
+                    transaction.update(u.ref, u.data);
+                });
             });
 
             setSuccess("Règlement validé !");

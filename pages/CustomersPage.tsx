@@ -25,13 +25,15 @@ const CustomersPage: React.FC = () => {
     const fetchData = async () => {
         setLoading(true);
         try {
-            const [custSnap, salesSnap] = await Promise.all([
+            const [custSnap, salesSnap, paymentsSnap] = await Promise.all([
                 getDocs(collection(db, "customers")),
-                getDocs(collection(db, "sales"))
+                getDocs(collection(db, "sales")),
+                getDocs(collection(db, "salePayments"))
             ]);
             
             const customersData = custSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Customer));
             const salesData = salesSnap.docs.map(doc => doc.data() as Sale);
+            const paymentsData = paymentsSnap.docs.map(doc => doc.data());
 
             const balanceMap: Record<string, number> = {};
             
@@ -40,15 +42,32 @@ const CustomersPage: React.FC = () => {
                 balanceMap[c.id] = c.openingBalance || 0;
             });
 
-            // On ajoute les factures et on retire les paiements
+            // On soustrait les paiements faits sur le solde d'ouverture
+            paymentsData.forEach(p => {
+                const saleId = p.saleId as string;
+                if (saleId && saleId.startsWith('OPENING_BALANCE_')) {
+                    const customerId = saleId.replace('OPENING_BALANCE_', '');
+                    if (balanceMap[customerId] !== undefined) {
+                        balanceMap[customerId] -= (p.amount || 0);
+                    }
+                }
+            });
+
+            // On ajoute les factures (reste à payer)
             salesData.forEach(sale => {
                 const unpaid = sale.grandTotal - (sale.paidAmount || 0);
                 balanceMap[sale.customerId] = (balanceMap[sale.customerId] || 0) + unpaid;
             });
 
+            // S'assurer qu'aucun solde n'est négatif (optionnel, selon la logique métier)
+            Object.keys(balanceMap).forEach(key => {
+                if (balanceMap[key] < 0) balanceMap[key] = 0;
+            });
+
             setCustomers(customersData);
             setBalances(balanceMap);
         } catch (err) {
+            console.error(err);
             setError("Impossible de charger les clients.");
         } finally {
             setLoading(false);

@@ -42,6 +42,51 @@ const DashboardPage: React.FC = () => {
 
   const formatCurrency = (value: number) => new Intl.NumberFormat('fr-FR').format(value) + ' FCFA';
 
+  const getWarehouseColor = (color?: string) => {
+      const colors: Record<string, string> = {
+          'blue': 'bg-blue-500',
+          'emerald': 'bg-emerald-500',
+          'purple': 'bg-purple-500',
+          'orange': 'bg-orange-500',
+          'yellow': 'bg-yellow-500',
+          'red': 'bg-red-500',
+          'cyan': 'bg-cyan-500',
+          'indigo': 'bg-indigo-500',
+          'rose': 'bg-rose-500'
+      };
+      return colors[color || ''] || 'bg-gray-900';
+  };
+
+  const getWarehouseBorderColor = (color?: string) => {
+      const colors: Record<string, string> = {
+          'blue': 'hover:border-blue-300 dark:hover:border-blue-700',
+          'emerald': 'hover:border-emerald-300 dark:hover:border-emerald-700',
+          'purple': 'hover:border-purple-300 dark:hover:border-purple-700',
+          'orange': 'hover:border-orange-300 dark:hover:border-orange-700',
+          'yellow': 'hover:border-yellow-300 dark:hover:border-yellow-700',
+          'red': 'hover:border-red-300 dark:hover:border-red-700',
+          'cyan': 'hover:border-cyan-300 dark:hover:border-cyan-700',
+          'indigo': 'hover:border-indigo-300 dark:hover:border-indigo-700',
+          'rose': 'hover:border-rose-300 dark:hover:border-rose-700'
+      };
+      return colors[color || ''] || 'hover:border-gray-300 dark:hover:border-gray-600';
+  };
+
+  const getWarehouseBgColor = (color?: string) => {
+      const colors: Record<string, string> = {
+          'blue': 'bg-blue-50 dark:bg-blue-900/20',
+          'emerald': 'bg-emerald-50 dark:bg-emerald-900/20',
+          'purple': 'bg-purple-50 dark:bg-purple-900/20',
+          'orange': 'bg-orange-50 dark:bg-orange-900/20',
+          'yellow': 'bg-yellow-50 dark:bg-yellow-900/20',
+          'red': 'bg-red-50 dark:bg-red-900/20',
+          'cyan': 'bg-cyan-50 dark:bg-cyan-900/20',
+          'indigo': 'bg-indigo-50 dark:bg-indigo-900/20',
+          'rose': 'bg-rose-50 dark:bg-rose-900/20'
+      };
+      return colors[color || ''] || 'bg-gray-50 dark:bg-gray-900/50';
+  };
+
   const stats = useMemo(() => {
     const last7Days = [...Array(7)].map((_, i) => {
         const d = new Date();
@@ -91,8 +136,21 @@ const DashboardPage: React.FC = () => {
         if(p) estProfit += (i.price - p.cost) * i.quantity;
     }));
 
-    return { dailyRevenue, maxDaily, topProducts, topCustomers, totalRevenue, totalCollected, estProfit, avgSale: sales.length ? totalRevenue / sales.length : 0 };
-  }, [sales, products, customers]);
+    const warehouseStats = warehouses.map(w => {
+        let count = 0;
+        let value = 0;
+        products.forEach(p => {
+            const level = p.stockLevels?.find(sl => sl.warehouseId === w.id);
+            if (level) {
+                count += level.quantity;
+                value += level.quantity * p.cost;
+            }
+        });
+        return { ...w, count, value };
+    });
+
+    return { dailyRevenue, maxDaily, topProducts, topCustomers, totalRevenue, totalCollected, estProfit, avgSale: sales.length ? totalRevenue / sales.length : 0, warehouseStats };
+  }, [sales, products, customers, warehouses]);
 
   if (loading) return <div className="p-24 text-center text-gray-400 font-black uppercase animate-pulse">Chargement du tableau de bord...</div>
 
@@ -126,6 +184,34 @@ const DashboardPage: React.FC = () => {
           <p className="text-2xl font-black text-blue-600">{formatCurrency(stats.avgSale)}</p>
           <div className="flex items-center mt-2 text-[10px] font-black uppercase text-blue-400"><ChartBarIcon className="w-3 h-3 mr-1"/> {sales.length} ventes</div>
         </div>
+      </div>
+
+      <div className="bg-white dark:bg-gray-800 shadow-xl rounded-[2.5rem] p-8 border dark:border-gray-700">
+          <h3 className="text-lg font-black uppercase tracking-tight flex items-center mb-6"><WarehouseIcon className="w-5 h-5 mr-3 text-purple-500"/>État des Entrepôts</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+              {stats.warehouseStats.map(w => (
+                  <div key={w.id} className={`bg-gray-50 dark:bg-gray-900/50 p-6 rounded-3xl border-2 border-transparent transition-all ${getWarehouseBorderColor(w.color)}`}>
+                      <div className="flex justify-between items-start mb-4">
+                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-white shadow-lg ${getWarehouseColor(w.color)}`}>
+                              {w.name.charAt(0)}
+                          </div>
+                          {w.isMain && <span className="px-2 py-1 bg-purple-100 text-purple-700 text-[10px] font-black uppercase rounded-lg">Principal</span>}
+                      </div>
+                      <h4 className="font-black uppercase text-sm mb-1 truncate">{w.name}</h4>
+                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-4">{w.location || 'Localisation inconnue'}</p>
+                      <div className="space-y-2">
+                          <div className="flex justify-between text-xs">
+                              <span className="font-bold text-gray-500">Articles</span>
+                              <span className="font-black">{w.count}</span>
+                          </div>
+                          <div className="flex justify-between text-xs">
+                              <span className="font-bold text-gray-500">Valeur</span>
+                              <span className="font-black text-green-600">{formatCurrency(w.value)}</span>
+                          </div>
+                      </div>
+                  </div>
+              ))}
+          </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">

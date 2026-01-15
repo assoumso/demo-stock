@@ -204,7 +204,121 @@ const ProductsPage: React.FC = () => {
                 </div>
             </Modal>
 
-            {/* Modal d'aperçu conservé tel quel car il utilise déjà les helper functions */}
+            <Modal isOpen={isBulkDeleteModalOpen} onClose={() => setIsBulkDeleteModalOpen(false)} title="Confirmation suppression groupée">
+                <div className="p-6 font-bold text-gray-600">Supprimer définitivement <span className="text-red-600 font-black">{selectedIds.length}</span> articles sélectionnés ?</div>
+                <div className="p-4 flex flex-row-reverse bg-gray-50 dark:bg-gray-700">
+                    <button onClick={handleBulkDelete} className="px-6 py-2 bg-red-600 text-white rounded-xl font-black uppercase text-xs ml-3">Supprimer tout</button>
+                    <button onClick={() => setIsBulkDeleteModalOpen(false)} className="px-6 py-2 bg-white text-gray-700 rounded-xl font-black uppercase text-xs border">Annuler</button>
+                </div>
+            </Modal>
+
+            {productToPreview && (
+                <Modal isOpen={isPreviewModalOpen} onClose={() => setIsPreviewModalOpen(false)} title="Fiche Article" maxWidth="max-w-4xl">
+                    <div className="p-6">
+                        <div className="flex flex-col md:flex-row gap-6">
+                            <div className="w-full md:w-1/3">
+                                <div className="aspect-square bg-gray-100 dark:bg-gray-900 rounded-2xl overflow-hidden flex items-center justify-center border dark:border-gray-700">
+                                    {productToPreview.imageUrl ? (
+                                        <img src={productToPreview.imageUrl} alt={productToPreview.name} className="w-full h-full object-cover" />
+                                    ) : (
+                                        <ImageIcon className="w-20 h-20 text-gray-300" />
+                                    )}
+                                </div>
+                            </div>
+                            <div className="w-full md:w-2/3 space-y-4">
+                                <div>
+                                    <h3 className="text-2xl font-black text-gray-900 dark:text-white uppercase tracking-tight">{productToPreview.name}</h3>
+                                    <p className="text-sm font-bold text-gray-400 uppercase tracking-widest mt-1">SKU: {productToPreview.sku}</p>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+                                        <div className="text-[10px] uppercase font-black text-gray-400 mb-1">Prix de vente</div>
+                                        <div className="text-lg font-black text-primary-600">{formatCurrency(productToPreview.price)}</div>
+                                    </div>
+                                    <div className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+                                        <div className="text-[10px] uppercase font-black text-gray-400 mb-1">Coût d'achat</div>
+                                        <div className="text-lg font-black text-gray-700 dark:text-gray-300">{formatCurrency(productToPreview.costPrice || 0)}</div>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm">
+                                    <div className="flex justify-between border-b dark:border-gray-700 py-2">
+                                        <span className="text-gray-500 font-medium">Catégorie</span>
+                                        <span className="font-bold text-gray-900 dark:text-white">{getCategoryName(productToPreview.categoryId)}</span>
+                                    </div>
+                                    <div className="flex justify-between border-b dark:border-gray-700 py-2">
+                                        <span className="text-gray-500 font-medium">Marque</span>
+                                        <span className="font-bold text-gray-900 dark:text-white">{getBrandName(productToPreview.brandId)}</span>
+                                    </div>
+                                    <div className="flex justify-between border-b dark:border-gray-700 py-2">
+                                        <span className="text-gray-500 font-medium">Unité</span>
+                                        <span className="font-bold text-gray-900 dark:text-white">{getUnitName(productToPreview.unitId)}</span>
+                                    </div>
+                                    <div className="flex justify-between border-b dark:border-gray-700 py-2">
+                                        <span className="text-gray-500 font-medium">Type</span>
+                                        <span className="font-bold text-gray-900 dark:text-white capitalize">{productToPreview.type === 'service' ? 'Service' : 'Produit Stockable'}</span>
+                                    </div>
+                                </div>
+
+                                {productToPreview.type !== 'service' && (
+                                    <div className="mt-6">
+                                        <h4 className="text-xs font-black uppercase text-gray-900 dark:text-white mb-3 flex items-center">
+                                            <WarehouseIcon className="w-4 h-4 mr-2 text-primary-500" />
+                                            État du Stock
+                                        </h4>
+                                        <div className="space-y-2">
+                                            {(productToPreview.stockLevels || []).map(sl => {
+                                                const warehouse = warehouses.find(w => w.id === sl.warehouseId);
+                                                if (!warehouse) return null;
+                                                return (
+                                                    <div key={sl.warehouseId} className="flex justify-between items-center p-2 rounded-lg bg-gray-50 dark:bg-gray-700/30 hover:bg-primary-50 dark:hover:bg-primary-900/10 transition-colors">
+                                                        <span className="text-sm font-bold text-gray-700 dark:text-gray-300">{warehouse.name}</span>
+                                                        <span className={`text-sm font-black ${sl.quantity <= (productToPreview.minStockAlert || 0) ? 'text-red-500' : 'text-green-600'}`}>
+                                                            {sl.quantity}
+                                                        </span>
+                                                    </div>
+                                                );
+                                            })}
+                                            {(!productToPreview.stockLevels || productToPreview.stockLevels.length === 0) && (
+                                                <div className="text-sm text-gray-400 italic text-center py-2">Aucun stock enregistré</div>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                    <div className="p-4 bg-gray-50 dark:bg-gray-700 flex justify-between items-center">
+                        <div className="flex space-x-2">
+                             {hasPermission('products:edit') && (
+                                <button 
+                                    onClick={() => {
+                                        setIsPreviewModalOpen(false);
+                                        navigate(`/products/edit/${productToPreview.id}`);
+                                    }} 
+                                    className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold uppercase text-xs shadow-lg transition-all"
+                                >
+                                    <EditIcon className="w-4 h-4 mr-2" /> Modifier
+                                </button>
+                            )}
+                            {hasPermission('products:delete') && (
+                                <button 
+                                    onClick={() => {
+                                        setIsPreviewModalOpen(false);
+                                        setProductToDelete(productToPreview);
+                                        setIsDeleteModalOpen(true);
+                                    }} 
+                                    className="flex items-center px-4 py-2 bg-red-600 text-white rounded-xl hover:bg-red-700 font-bold uppercase text-xs shadow-lg transition-all"
+                                >
+                                    <DeleteIcon className="w-4 h-4 mr-2" /> Supprimer
+                                </button>
+                            )}
+                        </div>
+                        <button onClick={() => setIsPreviewModalOpen(false)} className="px-6 py-2.5 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 rounded-xl font-black uppercase text-xs border dark:border-gray-600 shadow-sm hover:shadow-md transition-all">Fermer</button>
+                    </div>
+                </Modal>
+            )}
         </div>
     );
 };

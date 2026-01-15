@@ -75,47 +75,56 @@ export const PaymentReceipt = React.forwardRef<HTMLDivElement, PaymentReceiptPro
             </div>
 
             {/* Title */}
-            <div className="bg-blue-100 text-center py-1 mb-4 border-y border-blue-200">
-                <h2 className="font-bold text-xl uppercase">Reçu de versement</h2>
+            <div className="bg-indigo-100 text-center py-2 mb-4 border-y-2 border-indigo-200">
+                <h2 className="font-black text-xl uppercase text-indigo-900 tracking-wider">Reçu de versement</h2>
             </div>
 
             {/* Receipt Info */}
-            <div className="text-center mb-4">
-                <p className="font-bold text-lg">N° {payment.id.slice(-4).toUpperCase()}</p>
-                <p className="font-bold">Date: {dateStr}</p>
+            <div className="text-center mb-6">
+                <p className="font-bold text-lg">N° {payment.id === 'TEMP_RECEIPT' ? Math.floor(Date.now() / 1000).toString().slice(-4) : payment.id.slice(-4).toUpperCase()}</p>
+                <p className="font-bold text-gray-600">Date: {dateStr}</p>
             </div>
 
             {/* Customer */}
-            <div className="mb-4">
-                <p className="uppercase">Reçu de <span className="font-bold">M. {customer.name}</span></p>
+            <div className="mb-6 px-4">
+                <p className="uppercase text-gray-600 text-xs font-bold mb-1">Reçu de</p>
+                <p className="font-black text-lg uppercase">M. {customer.name}</p>
             </div>
 
             {/* Amount */}
-            <div className="mb-4">
-                <div className="flex justify-between items-baseline mb-1">
-                    <span className="font-bold text-xl">Montant:</span>
-                    <span className="font-bold text-xl">{new Intl.NumberFormat('fr-FR').format(payment.amount)}</span>
+            <div className="mb-6 px-4 bg-gray-50 py-4 rounded-xl border border-gray-100">
+                <div className="flex justify-between items-baseline mb-2">
+                    <span className="font-bold text-xl text-gray-600">Montant:</span>
+                    <span className="font-black text-2xl">{new Intl.NumberFormat('fr-FR').format(payment.amount)}</span>
                 </div>
-                <p className="text-xs italic uppercase">({amountWords})</p>
+                <p className="text-xs font-bold italic uppercase text-gray-500 tracking-wide border-t border-gray-200 pt-2 mt-1">
+                    ({amountWords})
+                </p>
             </div>
 
             {/* Details */}
-            <div className="mb-6 space-y-1">
-                <p>Mode: <span className="uppercase">{payment.method}</span></p>
-                <p>Motif: <span className="uppercase italic">{payment.notes || reference || 'REGLEMENT'}</span></p>
+            <div className="mb-8 px-4 space-y-2 text-sm">
+                <div className="flex justify-between border-b border-dashed border-gray-200 pb-1">
+                    <span className="text-gray-600">Mode:</span>
+                    <span className="font-bold uppercase">{payment.method}</span>
+                </div>
+                <div className="flex justify-between border-b border-dashed border-gray-200 pb-1">
+                    <span className="text-gray-600">Motif:</span>
+                    <span className="font-bold uppercase italic">{payment.notes || reference || 'REGLEMENT'}</span>
+                </div>
             </div>
 
             {/* Timestamps */}
-            <div className="mb-6 text-xs text-gray-600 italic space-y-1">
-                <p className="underline">Date de paiement: {dateStr}</p>
-                <p className="underline">Date d'édition: {dateStr}</p>
-                <p className="underline">Heure d'édition: {timeStr}</p>
+            <div className="mb-6 text-[10px] text-gray-400 italic space-y-1 text-center">
+                <p>Date de paiement: {dateStr}</p>
+                <p>Date d'édition: {dateStr}</p>
+                <p>Heure d'édition: {timeStr}</p>
             </div>
 
             {/* Balance */}
-            <div className="border rounded-xl p-2 bg-gray-50 flex justify-between items-center">
-                <span className="text-xs">Solde après édition:</span>
-                <span className="font-bold text-lg">{new Intl.NumberFormat('fr-FR').format(balanceAfter)}</span>
+            <div className="border-2 border-gray-800 rounded-xl p-3 bg-white flex justify-between items-center shadow-sm mx-4">
+                <span className="text-xs font-bold uppercase">Solde après édition:</span>
+                <span className="font-black text-xl">{new Intl.NumberFormat('fr-FR').format(balanceAfter)}</span>
             </div>
         </div>
     );

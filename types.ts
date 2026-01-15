@@ -50,6 +50,7 @@ export interface Customer extends BasePartner {
   creditLimit?: number;
   openingBalance?: number;
   openingBalanceDate?: string;
+  creditBalance?: number; // Solde Avoir (argent que nous devons au client)
 }
 
 /**
@@ -138,7 +139,7 @@ export interface SaleItem {
 
 export type PaymentStatus = 'En attente' | 'Partiel' | 'Payé';
 export type SaleStatus = 'En attente' | 'Complétée';
-export type PaymentMethod = 'Espèces' | 'Virement bancaire' | 'Mobile Money' | 'Autre';
+export type PaymentMethod = 'Espèces' | 'Virement bancaire' | 'Mobile Money' | 'Autre' | 'Compte Avoir';
 
 /**
  * Sale transaction record.

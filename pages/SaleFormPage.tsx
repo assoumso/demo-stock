@@ -5,6 +5,7 @@ import { collection, doc, getDoc, getDocs, addDoc, updateDoc, runTransaction, Do
 import { Sale, SaleItem, Product, Customer, Warehouse, PaymentStatus, AppSettings } from '../types';
 import { DeleteIcon, PlusIcon, WarningIcon } from '../constants';
 import { useAuth } from '../hooks/useAuth';
+import Modal from '../components/Modal';
 
 type FormSale = Omit<Sale, 'id'>;
 
@@ -39,6 +40,8 @@ const SaleFormPage: React.FC = () => {
     const [customerSearchTerm, setCustomerSearchTerm] = useState('');
     const [customerBalance, setCustomerBalance] = useState(0);
     const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+    const [stockErrorModalOpen, setStockErrorModalOpen] = useState(false);
+    const [stockErrorMessage, setStockErrorMessage] = useState('');
 
     useEffect(() => {
         const fetchData = async () => {
@@ -101,7 +104,15 @@ const SaleFormPage: React.FC = () => {
             }
             try {
                 const cust = customers.find(c => c.id === formState.customerId);
-                let totalUnpaid = cust?.openingBalance || 0;
+                let openingBalance = cust?.openingBalance || 0;
+
+                // Récupérer les paiements sur le solde d'ouverture
+                const openingBalanceId = `OPENING_BALANCE_${formState.customerId}`;
+                const paymentsQuery = query(collection(db, "salePayments"), where("saleId", "==", openingBalanceId));
+                const paymentsSnap = await getDocs(paymentsQuery);
+                const paidOpening = paymentsSnap.docs.reduce((sum, doc) => sum + (doc.data().amount || 0), 0);
+
+                let totalUnpaid = Math.max(0, openingBalance - paidOpening);
 
                 const q = query(collection(db, "sales"), where("customerId", "==", formState.customerId));
                 const snap = await getDocs(q);
@@ -155,6 +166,20 @@ const SaleFormPage: React.FC = () => {
     const handleItemChange = (index: number, field: 'quantity' | 'price', value: number) => {
         const newItems = [...formState.items];
         const item = newItems[index];
+
+        if (field === 'quantity') {
+            const product = products.find(p => p.id === item.productId);
+            if (product && product.type !== 'service') {
+                const stockEntry = product.stockLevels?.find(sl => sl.warehouseId === formState.warehouseId);
+                const availableStock = stockEntry?.quantity || 0;
+                
+                if (value > availableStock) {
+                    setStockErrorMessage(`Stock insuffisant pour "${product.name}". Disponible: ${availableStock}, Demandé: ${value}`);
+                    setStockErrorModalOpen(true);
+                }
+            }
+        }
+
         item[field] = value;
         item.subtotal = item.quantity * item.price;
         setFormState(prev => ({ ...prev, items: newItems }));
@@ -238,10 +263,14 @@ const SaleFormPage: React.FC = () => {
                         // 2. Déduire le stock si c'est complété maintenant
                         if (isNowCompleted && newItem) {
                             const whIdx = stockLevels.findIndex(sl => sl.warehouseId === finalSaleData.warehouseId);
+                            
+                            // VERIFICATION DU STOCK
+                            if (whIdx === -1 || stockLevels[whIdx].quantity < newItem.quantity) {
+                                throw new Error(`Stock insuffisant pour "${productData.name}". Disponible: ${whIdx > -1 ? stockLevels[whIdx].quantity : 0}, Demandé: ${newItem.quantity}`);
+                            }
+
                             if (whIdx > -1) {
                                 stockLevels[whIdx].quantity -= newItem.quantity;
-                            } else {
-                                stockLevels.push({ warehouseId: finalSaleData.warehouseId, quantity: -newItem.quantity });
                             }
                         }
 
@@ -283,7 +312,12 @@ const SaleFormPage: React.FC = () => {
             });
             navigate('/sales');
         } catch (err: any) {
-            setError(`Erreur: ${err.message}`);
+            if (err.message && err.message.includes("Stock insuffisant")) {
+                setStockErrorMessage(err.message);
+                setStockErrorModalOpen(true);
+            } else {
+                setError(`Erreur: ${err.message}`);
+            }
         }
     };
 
@@ -331,6 +365,13 @@ const SaleFormPage: React.FC = () => {
                                 {filteredCustomers.map(c => <li key={c.id} onClick={() => { setFormState(prev => ({...prev, customerId: c.id})); setCustomerSearchTerm(c.name); setSelectedCustomer(c); }} className="cursor-pointer px-4 py-3 hover:bg-primary-50 dark:hover:bg-primary-900/30 text-sm font-medium border-b last:border-0 dark:border-gray-700">{c.name}</li>)}
                             </ul>
                         )}
+                        {formState.customerId && (
+                            <div className="mt-1 text-right">
+                                <span className={`text-xs font-black px-2 py-0.5 rounded ${customerBalance > 0 ? 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300' : 'bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300'}`}>
+                                    Dette: {formatCurrency(customerBalance)}
+                                </span>
+                            </div>
+                        )}
                     </div>
                     <div><label className="block text-xs font-black uppercase text-gray-400">Entrepôt</label><select name="warehouseId" value={formState.warehouseId} onChange={handleFormChange} required className={inputFormClasses}>{userVisibleWarehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</select></div>
                     <div><label className="block text-xs font-black uppercase text-orange-500">Délai Paiement (Jours)</label><input type="number" name="paymentDeadlineDays" min="0" placeholder="Ex: 7" value={formState.paymentDeadlineDays || ''} onChange={handleFormChange} className={`${inputFormClasses} border-orange-200`}/></div>
@@ -342,6 +383,26 @@ const SaleFormPage: React.FC = () => {
                     {filteredProducts.length > 0 && (<ul className="absolute z-10 w-full mt-1 bg-white dark:bg-gray-800 shadow-2xl max-h-60 rounded-md py-1 border dark:border-gray-700 overflow-auto">{filteredProducts.map(p => (
                         <li key={p.id} onClick={() => addProductToSale(p)} className="cursor-pointer px-4 py-3 hover:bg-gray-100 dark:hover:bg-gray-700 flex justify-between items-center border-b last:border-0 dark:border-gray-700">
                             <div><p className="font-bold text-sm">{p.name}</p><p className="text-[10px] text-gray-400 font-black">{p.sku}</p></div>
+                            <div className="text-right">
+                                {p.type === 'service' ? (
+                                    <span className="text-xs font-bold text-blue-500 bg-blue-50 dark:bg-blue-900/30 px-2 py-1 rounded-lg">Service</span>
+                                ) : (
+                                    <div className="flex flex-col items-end">
+                                        <span className={`text-sm font-black ${
+                                            (formState.warehouseId 
+                                                ? (p.stockLevels?.find(sl => sl.warehouseId === formState.warehouseId)?.quantity || 0) 
+                                                : (p.stockLevels?.reduce((sum, sl) => sum + sl.quantity, 0) || 0)
+                                            ) <= (p.minStockAlert || 0) ? 'text-red-600' : 'text-green-600'
+                                        }`}>
+                                            {formState.warehouseId 
+                                                ? (p.stockLevels?.find(sl => sl.warehouseId === formState.warehouseId)?.quantity || 0) 
+                                                : (p.stockLevels?.reduce((sum, sl) => sum + sl.quantity, 0) || 0)
+                                            }
+                                        </span>
+                                        <span className="text-[9px] text-gray-400 font-bold uppercase tracking-wider">En stock</span>
+                                    </div>
+                                )}
+                            </div>
                         </li>
                     ))}</ul>)}
                 </div>
@@ -387,6 +448,24 @@ const SaleFormPage: React.FC = () => {
                     <button type="submit" className="px-10 py-3 text-sm text-white bg-primary-600 rounded-xl font-black shadow-lg hover:bg-primary-700 active:scale-95 transition-all">Enregistrer la vente</button>
                 </div>
             </form>
+
+            <Modal isOpen={stockErrorModalOpen} onClose={() => setStockErrorModalOpen(false)} title="Problème de Stock">
+                <div className="flex flex-col items-center text-center p-4">
+                    <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mb-4 animate-bounce">
+                        <WarningIcon className="w-8 h-8 text-red-600" />
+                    </div>
+                    <h3 className="text-lg font-black text-gray-800 dark:text-white mb-2 uppercase">Stock Insuffisant</h3>
+                    <p className="text-gray-600 dark:text-gray-300 mb-6 font-medium bg-red-50 dark:bg-red-900/20 p-4 rounded-lg border border-red-100 dark:border-red-800/30">
+                        {stockErrorMessage.replace("Error: ", "")}
+                    </p>
+                    <button 
+                        onClick={() => setStockErrorModalOpen(false)} 
+                        className="px-8 py-3 bg-red-600 text-white font-black uppercase tracking-wide rounded-xl shadow-lg hover:bg-red-700 active:scale-95 transition-all w-full"
+                    >
+                        Corriger la quantité
+                    </button>
+                </div>
+            </Modal>
         </div>
     );
 };

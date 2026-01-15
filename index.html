@@ -5,6 +5,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ETS-DEMO</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <script type="importmap">
 {
   "imports": {
@@ -43,6 +46,9 @@
       tailwind.config = {
         theme: {
           extend: {
+            fontFamily: {
+              sans: ['"Outfit"', 'sans-serif'],
+            },
             colors: {
               primary: {
                   '50': 'rgb(var(--color-primary-50) / <alpha-value>)',
@@ -76,6 +82,10 @@
             --color-primary-800: 146 64 14;
             --color-primary-900: 120 53 15;
             --color-primary-950: 69 26 3;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
         }
 
         @media print {

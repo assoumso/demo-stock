@@ -1,7 +1,21 @@
 
-import React, { useState, useRef, useEffect, ReactNode } from 'react';
+import React, { useState, useRef, useEffect, ReactNode, createContext, useContext } from 'react';
 import { createPortal } from 'react-dom';
 import { EllipsisVerticalIcon } from '../constants';
+
+interface DropdownMenuContextType {
+  closeMenu: () => void;
+}
+
+const DropdownMenuContext = createContext<DropdownMenuContextType | null>(null);
+
+const useDropdownMenu = () => {
+  const context = useContext(DropdownMenuContext);
+  if (!context) {
+    throw new Error('useDropdownMenu must be used within a DropdownMenu');
+  }
+  return context;
+};
 
 interface DropdownMenuProps {
   children: ReactNode;
@@ -48,7 +62,7 @@ const DropdownMenu: React.FC<DropdownMenuProps> = ({ children }) => {
   }, [isOpen]);
 
   return (
-    <>
+    <DropdownMenuContext.Provider value={{ closeMenu: () => setIsOpen(false) }}>
       <button
         ref={triggerRef}
         type="button"
@@ -70,14 +84,14 @@ const DropdownMenu: React.FC<DropdownMenuProps> = ({ children }) => {
           className="mt-2 w-56 rounded-xl shadow-2xl bg-white dark:bg-gray-800 ring-1 ring-black/5 dark:ring-white/10 focus:outline-none z-[9999] overflow-hidden border dark:border-gray-700"
           role="menu"
         >
-          {/* L'action de clic ici ferme le menu */}
-          <div className="py-1" onClick={() => setIsOpen(false)}>
+          {/* L'action de clic ici ne ferme plus automatiquement le menu */}
+          <div className="py-1">
             {children}
           </div>
         </div>,
         document.body
       )}
-    </>
+    </DropdownMenuContext.Provider>
   );
 };
 
@@ -89,11 +103,14 @@ interface DropdownMenuItemProps {
 }
 
 export const DropdownMenuItem: React.FC<DropdownMenuItemProps> = ({ onClick, children, className = '', disabled = false }) => {
+  const { closeMenu } = useDropdownMenu();
+  
   return (
     <button
       onClick={(e) => {
-        // On ne stoppe plus la propagation pour que le parent ferme le menu
+        e.preventDefault();
         onClick();
+        closeMenu(); // Fermer le menu après l'action
       }}
       disabled={disabled}
       className={`w-full text-left flex items-center px-4 py-3 text-sm text-gray-700 dark:text-gray-200 hover:bg-primary-50 dark:hover:bg-primary-900/40 hover:text-primary-600 dark:hover:text-primary-400 transition-all ${className} disabled:opacity-50 disabled:cursor-not-allowed`}

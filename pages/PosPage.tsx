@@ -284,7 +284,7 @@ const PosPage: React.FC = () => {
                     const stockLevels = [...(productData.stockLevels || [])];
                     const whIndex = stockLevels.findIndex(sl => sl.warehouseId === selectedWarehouseId);
                     if (whIndex === -1 || stockLevels[whIndex].quantity < item.quantity) {
-                        throw new Error(`Stock insuffisant pour ${productData.name}.`);
+                        throw new Error(`Stock insuffisant pour ${productData.name}. Disponible: ${whIndex > -1 ? stockLevels[whIndex].quantity : 0}, Demandé: ${item.quantity}`);
                     }
                     stockLevels[whIndex].quantity -= item.quantity;
                     updates.push({ ref: productRefs[i], data: { stockLevels } });

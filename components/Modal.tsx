@@ -36,26 +36,26 @@ const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, maxWidt
 
   return (
     <div
-      className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex justify-center items-center p-4"
+      className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex justify-center items-center p-4 sm:p-6"
       aria-modal="true"
       role="dialog"
     >
       <div 
         ref={modalRef} 
-        className={`bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full ${maxWidth} flex flex-col max-h-[90vh] animate-in fade-in zoom-in-95 duration-200`}
+        className={`bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full ${maxWidth} flex flex-col max-h-[90vh] animate-in fade-in zoom-in-95 duration-200 transition-all`}
       >
-        <div className="flex justify-between items-center border-b border-gray-100 dark:border-gray-700 p-5 flex-shrink-0">
-          <h2 className="text-lg font-black uppercase tracking-wide text-gray-800 dark:text-white">{title}</h2>
+        <div className="flex justify-between items-center border-b border-gray-100 dark:border-gray-700 p-4 sm:p-5 flex-shrink-0">
+          <h2 className="text-base sm:text-lg font-black uppercase tracking-wide text-gray-800 dark:text-white truncate pr-4">{title}</h2>
           <button 
             onClick={onClose} 
-            className="p-2 -mr-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition-colors"
+            className="p-2 -mr-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition-colors flex-shrink-0"
           >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
         </div>
-        <div className="overflow-y-auto p-6 custom-scrollbar">
+        <div className="overflow-y-auto p-4 sm:p-6 custom-scrollbar">
           {children}
         </div>
       </div>

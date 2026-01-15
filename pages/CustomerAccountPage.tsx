@@ -21,6 +21,8 @@ interface AccountMovement {
     saleId?: string;    // ID de la vente associée (pour mise à jour solde)
 }
 
+const formatCurrency = (v: number) => new Intl.NumberFormat('fr-FR').format(v) + ' FCFA';
+
 const CustomerAccountPage: React.FC = () => {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
@@ -69,9 +71,9 @@ const CustomerAccountPage: React.FC = () => {
         }
     };
 
-    const fetchAccountData = async () => {
+    const fetchAccountData = async (background = false) => {
         if (!id) return;
-        setLoading(true);
+        if (!background) setLoading(true);
         try {
             const custSnap = await getDoc(doc(db, 'customers', id));
             if (!custSnap.exists()) { navigate('/customers'); return; }
@@ -85,12 +87,13 @@ const CustomerAccountPage: React.FC = () => {
             const saleIds = salesDocs.map(s => s.id);
             let allPayments: SalePayment[] = [];
             const openingBalanceId = `OPENING_BALANCE_${id}`;
+            const creditBalanceId = `CREDIT_BALANCE_${id}`;
 
-            // Toujours récupérer les paiements, même s'il n'y a pas de ventes, pour le solde d'ouverture
+            // Toujours récupérer les paiements, même s'il n'y a pas de ventes, pour le solde d'ouverture et crédits
             const pSnap = await getDocs(collection(db, "salePayments"));
             allPayments = pSnap.docs
                 .map(d => ({ id: d.id, ...d.data() } as SalePayment))
-                .filter(p => saleIds.includes(p.saleId) || p.saleId === openingBalanceId);
+                .filter(p => saleIds.includes(p.saleId) || p.saleId === openingBalanceId || p.saleId === creditBalanceId);
 
             const combined: AccountMovement[] = [];
             
@@ -157,6 +160,21 @@ const CustomerAccountPage: React.FC = () => {
             allPayments.forEach(p => {
                 // On ignore les paiements du solde d'ouverture car ils sont déjà traités plus haut
                 if (p.saleId.startsWith('OPENING_BALANCE_')) return;
+
+                if (p.saleId.startsWith('CREDIT_BALANCE_')) {
+                    combined.push({
+                        date: p.date,
+                        ref: `AVOIR-${p.id.slice(-4).toUpperCase()}`,
+                        description: `Dépôt / Avoir (Crédit généré)`,
+                        debit: 0,
+                        credit: p.amount,
+                        balance: 0,
+                        type: 'payment',
+                        paymentId: p.id,
+                        saleId: p.saleId
+                    });
+                    return;
+                }
 
                 const parentSale = salesDocs.find(s => s.id === p.saleId);
                 combined.push({
@@ -226,15 +244,44 @@ const CustomerAccountPage: React.FC = () => {
             await runTransaction(db, async (transaction) => {
                 const { id: paymentId, saleId, amount } = paymentToDelete;
                 
-                // Get payment data first to store in deleted collection
+                // Get payment data first
                 const paymentRef = doc(db, "salePayments", paymentId);
                 const paymentSnap = await transaction.get(paymentRef);
                 if (!paymentSnap.exists()) throw new Error("Paiement introuvable");
                 const paymentData = paymentSnap.data() as SalePayment;
 
+                // Handle Credit Balance Impacts
+                const customerRef = doc(db, "customers", id!);
+                const customerSnap = await transaction.get(customerRef);
+                
+                if (customerSnap.exists()) {
+                    const customerData = customerSnap.data() as Customer;
+                    let currentCredit = customerData.creditBalance || 0;
+                    let creditChanged = false;
+
+                    // CAS 1: Remboursement si payé par 'Compte Avoir'
+                    if (paymentData.method === 'Compte Avoir') {
+                        currentCredit += amount;
+                        creditChanged = true;
+                    }
+
+                    // CAS 2: Déduction si on supprime un Avoir (Surplus généré)
+                    if (saleId.startsWith('CREDIT_BALANCE_')) {
+                        if (currentCredit < amount) {
+                            throw new Error(`Impossible de supprimer cet avoir : une partie a déjà été utilisée (Solde: ${formatCurrency(currentCredit)}).`);
+                        }
+                        currentCredit -= amount;
+                        creditChanged = true;
+                    }
+
+                    if (creditChanged) {
+                        transaction.update(customerRef, { creditBalance: currentCredit });
+                    }
+                }
+
                 // 1. Si c'est un paiement de solde d'ouverture
-                if (saleId.startsWith('OPENING_BALANCE_')) {
-                    // Nothing special for parent sale
+                if (saleId.startsWith('OPENING_BALANCE_') || saleId.startsWith('CREDIT_BALANCE_')) {
+                    // Nothing to update on a sale document
                 } else {
                     // 2. Si c'est un paiement de facture, on doit mettre à jour la facture
                     const saleRef = doc(db, "sales", saleId);
@@ -243,7 +290,7 @@ const CustomerAccountPage: React.FC = () => {
                     if (saleSnap.exists()) {
                         const saleData = saleSnap.data() as Sale;
                         const newPaid = Math.max(0, (saleData.paidAmount || 0) - amount);
-                        const remaining = saleData.grandTotal - newPaid;
+                        // const remaining = saleData.grandTotal - newPaid;
                         
                         let newStatus: PaymentStatus = 'Non payé';
                         if (newPaid >= saleData.grandTotal - 0.1) newStatus = 'Payé';
@@ -292,70 +339,213 @@ const CustomerAccountPage: React.FC = () => {
 
         setIsSubmitting(true);
         setError(null);
-        let newPaymentDocId = '';
         
         try {
-            const isOpeningBalance = selectedSaleId.startsWith('OPENING_BALANCE_');
-            const pData: any = {
-                saleId: selectedSaleId,
-                date: new Date().toISOString(),
-                amount: paymentAmount,
-                method: paymentMethod,
-                createdByUserId: user.uid,
-                notes: paymentNotes
-            };
+            // 1. Préparer la liste de toutes les dettes (Factures impayées + Solde ouverture)
+            const allDebts: { id: string, type: 'sale' | 'opening', remaining: number, date: string, refNumber?: string }[] = [];
 
-            if (paymentMethod === 'Mobile Money') {
-                pData.momoOperator = momoOperator;
-                pData.momoNumber = momoNumber;
+            // A. Solde d'ouverture
+            if (openingBalanceRemaining > 0.1) {
+                allDebts.push({
+                    id: `OPENING_BALANCE_${id}`,
+                    type: 'opening',
+                    remaining: openingBalanceRemaining,
+                    date: '1970-01-01', // Priorité par date (très ancienne)
+                    refNumber: 'SOLDE OUVERTURE'
+                });
             }
 
-            // Create a reference for the new payment
-            const newPaymentRef = doc(collection(db, "salePayments"));
-            newPaymentDocId = newPaymentRef.id;
-            pData.id = newPaymentDocId;
-
-            await runTransaction(db, async (transaction) => {
-                if (isOpeningBalance) {
-                    if (paymentAmount > openingBalanceRemaining + 0.1) {
-                        throw new Error(`Le montant dépasse le reste à payer du solde d'ouverture (${openingBalanceRemaining} FCFA).`);
-                    }
-                    transaction.set(newPaymentRef, pData);
-                } else {
-                    const sRef = doc(db, 'sales', selectedSaleId);
-                    const sSnap = await transaction.get(sRef);
-                    if (!sSnap.exists()) throw new Error("Facture introuvable.");
-                    const data = sSnap.data() as Sale;
-                    const newPaid = data.paidAmount + paymentAmount;
-                    const remaining = data.grandTotal - newPaid;
-                    if (remaining < -0.1) throw new Error("Le montant dépasse le solde de la facture.");
-                    let status: PaymentStatus = remaining <= 0.1 ? 'Payé' : 'Partiel';
-                    
-                    transaction.update(sRef, { paidAmount: newPaid, paymentStatus: status });
-                    transaction.set(newPaymentRef, pData);
+            // B. Factures impayées (exclure celles déjà payées)
+            unpaidSales.forEach(s => {
+                const rem = s.grandTotal - s.paidAmount;
+                if (rem > 0.1) {
+                    allDebts.push({
+                        id: s.id,
+                        type: 'sale',
+                        remaining: rem,
+                        date: s.date,
+                        refNumber: s.referenceNumber
+                    });
                 }
             });
 
-            setIsPaymentModalOpen(false);
-            
-            // Prepare receipt data
-            setLastPayment(pData as SalePayment);
-            setLastPaymentBalance(summary.balance - paymentAmount); // Approximate new balance
-            setShowReceiptModal(true);
+            // 2. Ordonner les dettes : Celle sélectionnée en premier, puis les autres par date (plus anciennes d'abord)
+            allDebts.sort((a, b) => {
+                if (a.id === selectedSaleId) return -1;
+                if (b.id === selectedSaleId) return 1;
+                return new Date(a.date).getTime() - new Date(b.date).getTime();
+            });
 
+            // 3. Vérifier si le montant total dépasse la dette totale
+            const totalDebt = allDebts.reduce((sum, d) => sum + d.remaining, 0);
+            if (paymentAmount > totalDebt + 10) { // Tolérance de 10 FCFA
+                if (!window.confirm(`Le montant saisi (${formatCurrency(paymentAmount)}) est supérieur à la dette totale du client (${formatCurrency(totalDebt)}). Voulez-vous continuer et créer un avoir pour le surplus ?`)) {
+                    setIsSubmitting(false);
+                    return;
+                }
+            }
+
+            // 4. Exécuter la transaction de répartition (READS then WRITES)
+            await runTransaction(db, async (transaction) => {
+                // Lecture préalable du client pour gérer le solde Avoir
+                const customerRef = doc(db, 'customers', id!);
+                const customerSnap = await transaction.get(customerRef);
+                if (!customerSnap.exists()) throw new Error("Client introuvable");
+                const customerData = customerSnap.data() as Customer;
+                let currentCreditBalance = customerData.creditBalance || 0;
+
+                // Si paiement par Compte Avoir, vérifier et déduire
+                if (paymentMethod === 'Compte Avoir') {
+                    if (paymentAmount > currentCreditBalance) {
+                        throw new Error(`Solde Avoir insuffisant (Disponible: ${formatCurrency(currentCreditBalance)})`);
+                    }
+                    currentCreditBalance -= paymentAmount;
+                }
+
+                let localRemaining = paymentAmount;
+                const updatesToPerform: { ref: any, data: any }[] = [];
+                const paymentsToCreate: any[] = [];
+
+                // PHASE 1: READS & CALCULS (Dettes)
+                for (const debt of allDebts) {
+                    if (localRemaining <= 0.1) break;
+
+                    let currentDue = 0;
+                    let saleRef = null;
+                    let saleData = null;
+
+                    if (debt.type === 'sale') {
+                        saleRef = doc(db, 'sales', debt.id);
+                        const saleSnap = await transaction.get(saleRef);
+                        if (!saleSnap.exists()) continue;
+                        saleData = saleSnap.data() as Sale;
+                        currentDue = saleData.grandTotal - saleData.paidAmount;
+                    } else {
+                        // Opening balance
+                        currentDue = debt.remaining; 
+                    }
+
+                    const payAmount = Math.min(localRemaining, currentDue);
+                    
+                    if (payAmount > 0.1) {
+                        const pData: any = {
+                            saleId: debt.id,
+                            date: new Date().toISOString(),
+                            amount: payAmount,
+                            method: paymentMethod,
+                            createdByUserId: user.uid,
+                            notes: paymentNotes + (allDebts.length > 1 && debt.id !== selectedSaleId ? ` (Reliquat)` : '')
+                        };
+                        if (paymentMethod === 'Mobile Money') {
+                            pData.momoOperator = momoOperator;
+                            pData.momoNumber = momoNumber;
+                        }
+                        
+                        paymentsToCreate.push(pData);
+
+                        if (debt.type === 'sale' && saleRef && saleData) {
+                            const newPaid = (saleData.paidAmount || 0) + payAmount;
+                            const newStatus = (saleData.grandTotal - newPaid) <= 0.1 ? 'Payé' : 'Partiel';
+                            updatesToPerform.push({
+                                ref: saleRef,
+                                data: { paidAmount: newPaid, paymentStatus: newStatus }
+                            });
+                        }
+
+                        localRemaining -= payAmount;
+                    }
+                }
+                
+                // Gestion du surplus -> Crédit
+                if (localRemaining > 0.1) {
+                   const creditPayment: any = {
+                        saleId: `CREDIT_BALANCE_${id}`,
+                        date: new Date().toISOString(),
+                        amount: localRemaining,
+                        method: paymentMethod,
+                        createdByUserId: user.uid,
+                        notes: (paymentNotes || 'Avoir généré suite surplus') + ` (Surplus)`
+                   };
+                   if (paymentMethod === 'Mobile Money') {
+                        creditPayment.momoOperator = momoOperator;
+                        creditPayment.momoNumber = momoNumber;
+                   }
+                   paymentsToCreate.push(creditPayment);
+                   
+                   // Ajout du surplus au solde
+                   currentCreditBalance += localRemaining;
+                }
+
+                // PHASE 2: WRITES
+                // Mise à jour du solde client si modifié
+                if (currentCreditBalance !== (customerData.creditBalance || 0)) {
+                    transaction.update(customerRef, { creditBalance: currentCreditBalance });
+                }
+
+                paymentsToCreate.forEach(p => {
+                    const newRef = doc(collection(db, "salePayments"));
+                    p.id = newRef.id; 
+                    transaction.set(newRef, p);
+                });
+
+                updatesToPerform.forEach(u => {
+                    transaction.update(u.ref, u.data);
+                });
+            });
+
+            // Capture des données pour le reçu avant réinitialisation
+            const receiptAmount = paymentAmount;
+            const receiptMethod = paymentMethod;
+            const receiptNotes = paymentNotes;
+            const receiptSaleId = selectedSaleId;
+            const previousBalance = summary.balance;
+
+            // Réinitialiser le formulaire
+            setIsPaymentModalOpen(false);
             setPaymentAmount(0);
             setPaymentNotes('');
             setMomoOperator('');
             setMomoNumber('');
-            fetchAccountData();
-        } catch (err: any) { setError(err.message); }
-        finally { setIsSubmitting(false); }
+            setPaymentMethod('Espèces');
+            
+            // Rafraîchir les données
+            try {
+                await fetchAccountData(true);
+            } catch (err) {
+                console.error("Erreur lors du rafraîchissement des données:", err);
+            }
+            
+            // Préparer le reçu
+            // On génère un ID temporaire pour l'affichage immédiat
+            const tempReceiptId = `REC-${Date.now().toString().slice(-6)}`;
+            
+            setLastPayment({
+                id: tempReceiptId,
+                saleId: receiptSaleId || 'MULTI_PAYMENT',
+                date: new Date().toISOString(),
+                amount: receiptAmount,
+                method: receiptMethod,
+                createdByUserId: user.uid,
+                notes: receiptNotes
+            } as SalePayment);
+            
+            // Calculer le nouveau solde estimé pour affichage immédiat
+            setLastPaymentBalance(previousBalance > receiptAmount ? previousBalance - receiptAmount : 0); 
+            
+            setShowReceiptModal(true);
+
+        } catch (err: any) {
+            console.error("Erreur lors du paiement:", err);
+            setError(err.message || "Une erreur est survenue lors du paiement");
+        } finally {
+            setIsSubmitting(false);
+        }
     };
 
     const handlePrint = useReactToPrint({ contentRef: printRef });
     const handlePrintReceipt = useReactToPrint({ contentRef: receiptRef });
 
-    const formatCurrency = (v: number) => new Intl.NumberFormat('fr-FR').format(v) + ' FCFA';
+
 
     if (loading) return <div className="p-12 text-center text-gray-500 font-bold animate-pulse uppercase tracking-widest">Génération du Grand Livre...</div>;
 
@@ -384,7 +574,7 @@ const CustomerAccountPage: React.FC = () => {
                 </div>
             </header>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 no-print">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6 no-print">
                 <div className="bg-white dark:bg-gray-800 p-6 rounded-3xl shadow-xl border-t-4 border-blue-500">
                     <p className="text-xs font-black text-gray-400 uppercase tracking-widest mb-2">Total Dû (Ventes + Ouverture)</p>
                     <p className="text-2xl font-black">{formatCurrency(summary.totalDue)}</p>
@@ -392,6 +582,10 @@ const CustomerAccountPage: React.FC = () => {
                 <div className="bg-white dark:bg-gray-800 p-6 rounded-3xl shadow-xl border-t-4 border-green-500">
                     <p className="text-xs font-black text-gray-400 uppercase tracking-widest mb-2">Total Règlement (Crédit)</p>
                     <p className="text-2xl font-black text-green-600">{formatCurrency(summary.totalPaid)}</p>
+                </div>
+                <div className="bg-white dark:bg-gray-800 p-6 rounded-3xl shadow-xl border-t-4 border-yellow-500">
+                    <p className="text-xs font-black text-gray-400 uppercase tracking-widest mb-2">Crédit Disponible (Avoir)</p>
+                    <p className="text-2xl font-black text-yellow-600">{formatCurrency(customer?.creditBalance || 0)}</p>
                 </div>
                 <div className={`bg-white dark:bg-gray-800 p-6 rounded-3xl shadow-xl border-t-4 ${summary.balance > 0 ? 'border-red-500' : 'border-primary-500'}`}>
                     <p className="text-xs font-black text-gray-400 uppercase tracking-widest mb-2">Solde Net Client</p>
@@ -473,7 +667,7 @@ const CustomerAccountPage: React.FC = () => {
                         </select>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
                             <label className="block text-[10px] font-black uppercase text-gray-500 mb-1.5">Montant</label>
                             <div className="relative">
@@ -499,12 +693,15 @@ const CustomerAccountPage: React.FC = () => {
                                 <option value="Mobile Money">Mobile Money</option>
                                 <option value="Virement bancaire">Virement</option>
                                 <option value="Autre">Autre</option>
+                                {(customer?.creditBalance || 0) > 0 && (
+                                    <option value="Compte Avoir">Compte Avoir (Dispo: {formatCurrency(customer?.creditBalance || 0)})</option>
+                                )}
                             </select>
                         </div>
                     </div>
 
                     {paymentMethod === 'Mobile Money' && (
-                        <div className="grid grid-cols-2 gap-4 bg-blue-50/50 p-3 rounded-xl border border-blue-100">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-blue-50/50 p-3 rounded-xl border border-blue-100">
                             <div>
                                 <label className="block text-[10px] font-black uppercase text-blue-600 mb-1.5">Opérateur</label>
                                 <select 
@@ -570,30 +767,32 @@ const CustomerAccountPage: React.FC = () => {
             </Modal>
 
             {/* Receipt Modal */}
-            <Modal isOpen={showReceiptModal} onClose={() => setShowReceiptModal(false)} title="REÇU DE PAIEMENT" maxWidth="max-w-md">
-                <div className="flex flex-col items-center bg-gray-50/50 dark:bg-gray-900/50 -m-6 p-6 rounded-b-2xl">
-                    {lastPayment && customer && (
-                        <div className="mb-6 shadow-xl ring-1 ring-gray-900/5 bg-white transform transition-all hover:scale-[1.02] duration-300">
-                            <PaymentReceipt 
-                                ref={receiptRef}
-                                payment={lastPayment}
-                                customer={customer}
-                                settings={settings}
-                                balanceAfter={lastPaymentBalance}
-                                reference={movements.find(m => m.saleId === lastPayment.saleId)?.ref || lastPayment.saleId}
-                            />
-                        </div>
-                    )}
-                    <div className="flex gap-3 w-full justify-center">
+            <Modal isOpen={showReceiptModal} onClose={() => setShowReceiptModal(false)} title="REÇU DE PAIEMENT" maxWidth="max-w-xl">
+                <div className="flex flex-col items-center">
+                    <div className="w-full overflow-x-auto flex justify-center py-4 bg-gray-50/50 dark:bg-gray-900/50 rounded-xl mb-6">
+                        {lastPayment && customer && (
+                            <div className="shadow-xl ring-1 ring-gray-900/5 bg-white transform transition-all hover:scale-[1.02] duration-300">
+                                <PaymentReceipt 
+                                    ref={receiptRef}
+                                    payment={lastPayment}
+                                    customer={customer}
+                                    settings={settings}
+                                    balanceAfter={lastPaymentBalance}
+                                    reference={movements.find(m => m.saleId === lastPayment.saleId)?.ref || lastPayment.saleId}
+                                />
+                            </div>
+                        )}
+                    </div>
+                    <div className="flex flex-wrap gap-3 w-full justify-center">
                          <button 
                             onClick={() => setShowReceiptModal(false)}
-                            className="px-5 py-2.5 font-bold text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-xl transition-colors text-xs uppercase tracking-wider"
+                            className="px-5 py-2.5 font-bold text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-xl transition-colors text-xs uppercase tracking-wider flex-1 md:flex-none justify-center flex"
                         >
                             Fermer
                         </button>
                         <button 
                             onClick={handlePrintReceipt}
-                            className="px-6 py-2.5 bg-blue-600 text-white font-black text-xs uppercase tracking-widest rounded-xl hover:bg-blue-700 shadow-lg shadow-blue-200 flex items-center transition-all active:scale-95"
+                            className="px-6 py-2.5 bg-blue-600 text-white font-black text-xs uppercase tracking-widest rounded-xl hover:bg-blue-700 shadow-lg shadow-blue-200 flex items-center justify-center transition-all active:scale-95 flex-1 md:flex-none"
                         >
                             <PrintIcon className="w-4 h-4 mr-2" /> Imprimer
                         </button>
@@ -633,17 +832,17 @@ const CustomerAccountPage: React.FC = () => {
                         </p>
                     </div>
 
-                    <div className="flex justify-end gap-3 pt-2">
+                    <div className="flex flex-wrap justify-end gap-3 pt-2">
                         <button 
                             onClick={() => setDeleteModalOpen(false)}
-                            className="px-5 py-2.5 font-bold text-xs uppercase tracking-wider text-gray-500 hover:bg-gray-100 rounded-xl transition-colors"
+                            className="px-5 py-2.5 font-bold text-xs uppercase tracking-wider text-gray-500 hover:bg-gray-100 rounded-xl transition-colors flex-1 md:flex-none justify-center flex"
                         >
                             Annuler
                         </button>
                         <button 
                             onClick={confirmDeletePayment}
                             disabled={isDeleting || !deleteReason.trim()}
-                            className="px-6 py-2.5 bg-red-600 text-white font-black text-xs uppercase tracking-widest rounded-xl hover:bg-red-700 disabled:opacity-50 shadow-lg shadow-red-200 flex items-center transition-all active:scale-95"
+                            className="px-6 py-2.5 bg-red-600 text-white font-black text-xs uppercase tracking-widest rounded-xl hover:bg-red-700 disabled:opacity-50 shadow-lg shadow-red-200 flex items-center justify-center transition-all active:scale-95 flex-1 md:flex-none"
                         >
                             {isDeleting ? 'Suppression...' : 'Confirmer'}
                         </button>
