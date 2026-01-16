@@ -6,6 +6,7 @@ import { Customer, Supplier, Sale, Purchase, SalePayment, Payment, PaymentMethod
 import { useAuth } from '../hooks/useAuth';
 import { SearchIcon, CustomersIcon, SuppliersIcon, WarningIcon, CheckIcon, EditIcon, DeleteIcon } from '../constants';
 import Modal from '../components/Modal';
+import { Pagination } from '../components/Pagination';
 import { PaymentReceipt } from '../components/PaymentReceipt';
 import { useReactToPrint } from 'react-to-print';
 
@@ -50,6 +51,13 @@ const PaymentsPage: React.FC = () => {
     const [paymentHistory, setPaymentHistory] = useState<any[]>([]);
     const [editingPayment, setEditingPayment] = useState<any | null>(null);
     const [showEditModal, setShowEditModal] = useState(false);
+    
+    // History Filters & Pagination
+    const [historySearch, setHistorySearch] = useState('');
+    const [historyStartDate, setHistoryStartDate] = useState('');
+    const [historyEndDate, setHistoryEndDate] = useState('');
+    const [historyPage, setHistoryPage] = useState(1);
+    const HISTORY_ITEMS_PER_PAGE = 20;
 
     useEffect(() => {
         const fetchBaseData = async () => {
@@ -154,7 +162,31 @@ const PaymentsPage: React.FC = () => {
     const fetchHistory = async () => {
         try {
             const collectionName = activeTab === 'clients' ? 'salePayments' : 'purchasePayments';
-            const q = query(collection(db, collectionName), where("date", ">=", new Date(new Date().setMonth(new Date().getMonth() - 3)).toISOString())); // Last 3 months
+            const constraints = [];
+
+            // Apply date filters if present, otherwise default to last 3 months
+            if (historyStartDate) {
+                const start = new Date(historyStartDate);
+                start.setHours(0, 0, 0, 0);
+                constraints.push(where("date", ">=", start.toISOString()));
+            } else {
+                // Default: Last 3 months if no start date filter is active
+                // If only End Date is set, we generally still want a lower bound to avoid fetching ALL history.
+                // For now, let's keep the default behavior: if no start date, show last 3 months.
+                // Unless user specifically wants "everything up to X", they should set a start date.
+                constraints.push(where("date", ">=", new Date(new Date().setMonth(new Date().getMonth() - 3)).toISOString()));
+            }
+
+            if (historyEndDate) {
+                const end = new Date(historyEndDate);
+                end.setHours(23, 59, 59, 999);
+                constraints.push(where("date", "<=", end.toISOString()));
+            }
+
+            // Remove orderBy from Firestore query to avoid index requirement issues. 
+            // Sorting is done in memory below.
+            const q = query(collection(db, collectionName), ...constraints);
+
             const snap = await getDocs(q);
             
             // Need to join with sales/purchases to get reference numbers if possible, or at least partner name
@@ -259,7 +291,27 @@ const PaymentsPage: React.FC = () => {
 
     useEffect(() => {
         fetchHistory();
-    }, [activeTab, selectedPartner, customers, suppliers]); // Refetch when tab or partner changes
+    }, [activeTab, selectedPartner, customers, suppliers, historyStartDate, historyEndDate]); // Refetch when filters change
+
+    const filteredHistory = useMemo(() => {
+        return paymentHistory.filter(p => {
+            if (!historySearch) return true;
+            const searchLower = historySearch.toLowerCase();
+            return (
+                (p.partnerName && p.partnerName.toLowerCase().includes(searchLower)) ||
+                (p.invoiceRef && p.invoiceRef.toLowerCase().includes(searchLower)) ||
+                (p.notes && p.notes.toLowerCase().includes(searchLower)) ||
+                (p.amount && p.amount.toString().includes(searchLower))
+            );
+        });
+    }, [paymentHistory, historySearch]);
+
+    const paginatedHistory = useMemo(() => {
+        const start = (historyPage - 1) * HISTORY_ITEMS_PER_PAGE;
+        return filteredHistory.slice(start, start + HISTORY_ITEMS_PER_PAGE);
+    }, [filteredHistory, historyPage]);
+    
+    const totalHistoryPages = Math.ceil(filteredHistory.length / HISTORY_ITEMS_PER_PAGE);
 
     const handleDeletePayment = async (paymentId: string, invoiceId: string, amount: number) => {
         if (!window.confirm("Êtes-vous sûr de vouloir supprimer ce paiement ? Cela mettra à jour le solde de la facture.")) return;
@@ -819,10 +871,39 @@ const PaymentsPage: React.FC = () => {
         
             {/* Payment History Table */}
             <div className="mt-12">
-                <h2 className="text-xl font-black uppercase text-gray-900 dark:text-white mb-4">
-                    Historique des {activeTab === 'clients' ? 'Versements Clients' : 'Paiements Fournisseurs'}
-                    {selectedPartner && <span className="text-primary-600"> - {selectedPartner.name}</span>}
-                </h2>
+                <div className="flex flex-col md:flex-row justify-between items-end md:items-center mb-4 gap-4">
+                    <h2 className="text-xl font-black uppercase text-gray-900 dark:text-white">
+                        Historique des {activeTab === 'clients' ? 'Versements Clients' : 'Paiements Fournisseurs'}
+                        {selectedPartner && <span className="text-primary-600"> - {selectedPartner.name}</span>}
+                    </h2>
+                    
+                    <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+                         <div className="relative flex-grow md:flex-grow-0">
+                            <input 
+                                type="text" 
+                                value={historySearch}
+                                onChange={(e) => { setHistorySearch(e.target.value); setHistoryPage(1); }}
+                                placeholder="Rechercher (Nom, Réf, Notes)..."
+                                className="w-full md:w-64 pl-9 pr-4 py-2 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 focus:ring-2 focus:ring-primary-500 text-sm"
+                            />
+                            <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400"/>
+                        </div>
+                        <input 
+                            type="date" 
+                            value={historyStartDate}
+                            onChange={(e) => { setHistoryStartDate(e.target.value); setHistoryPage(1); }}
+                            className="px-3 py-2 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 text-sm"
+                        />
+                        <span className="text-gray-400">-</span>
+                        <input 
+                            type="date" 
+                            value={historyEndDate}
+                            onChange={(e) => { setHistoryEndDate(e.target.value); setHistoryPage(1); }}
+                            className="px-3 py-2 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 text-sm"
+                        />
+                    </div>
+                </div>
+
                 <div className="bg-white dark:bg-gray-800 rounded-3xl shadow-xl border dark:border-gray-700 overflow-hidden">
                     <div className="overflow-x-auto">
                         <table className="w-full">
@@ -837,14 +918,14 @@ const PaymentsPage: React.FC = () => {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                                {paymentHistory.length === 0 ? (
+                                {paginatedHistory.length === 0 ? (
                                     <tr>
                                         <td colSpan={6} className="px-6 py-8 text-center text-gray-400 text-sm italic">
                                             Aucun historique trouvé pour cette période.
                                         </td>
                                     </tr>
                                 ) : (
-                                    paymentHistory.map((payment) => (
+                                    paginatedHistory.map((payment) => (
                                         <tr key={payment.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
                                             <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-700 dark:text-gray-300">
                                                 {new Date(payment.date).toLocaleDateString('fr-FR')}
@@ -886,6 +967,15 @@ const PaymentsPage: React.FC = () => {
                             </tbody>
                         </table>
                     </div>
+                    
+                    {/* Pagination Controls */}
+                    <Pagination 
+                        currentPage={historyPage} 
+                        totalPages={totalHistoryPages} 
+                        onPageChange={setHistoryPage} 
+                        totalItems={filteredHistory.length} 
+                        itemsPerPage={HISTORY_ITEMS_PER_PAGE} 
+                    />
                 </div>
             </div>
         </div>
