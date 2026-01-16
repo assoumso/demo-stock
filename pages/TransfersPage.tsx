@@ -5,7 +5,7 @@ import { WarehouseTransfer, Product, Warehouse, WarehouseTransferItem } from '..
 import { Pagination } from '../components/Pagination';
 import Modal from '../components/Modal';
 import { useAuth } from '../hooks/useAuth';
-import { DeleteIcon, PlusIcon, EyeIcon } from '../constants';
+import { DeleteIcon, PlusIcon, EyeIcon, EditIcon } from '../constants';
 
 const TransfersPage: React.FC = () => {
     const { hasPermission } = useAuth();
@@ -269,6 +269,130 @@ const TransfersPage: React.FC = () => {
         setSelectedTransfer(transfer);
         setShowDetailModal(true);
     };
+
+    const handleDeleteTransfer = async (transfer: WarehouseTransfer) => {
+        if (!window.confirm("Êtes-vous sûr de vouloir supprimer ce transfert ? Cette action annulera les mouvements de stock associés.")) return;
+
+        setLoading(true);
+        try {
+            await runTransaction(db, async (transaction) => {
+                const transferRef = doc(db, 'warehouseTransfers', transfer.id);
+                const transferDoc = await transaction.get(transferRef);
+                if (!transferDoc.exists()) throw new Error("Transfert introuvable.");
+
+                const itemsToRevert = transfer.items || (transfer.productId ? [{ productId: transfer.productId, quantity: transfer.quantity || 0 }] : []);
+
+                const productReads = itemsToRevert.map(item => ({ 
+                    ref: doc(db, 'products', item.productId), 
+                    item 
+                }));
+                const productDocs = await Promise.all(productReads.map(p => transaction.get(p.ref)));
+
+                const updates = [];
+                for (let i = 0; i < productDocs.length; i++) {
+                    const docSnapshot = productDocs[i];
+                    const { item, ref } = productReads[i];
+
+                    if (!docSnapshot.exists()) throw new Error(`Produit ${item.productId} non trouvé.`);
+
+                    const productData = docSnapshot.data() as Product;
+                    const stockLevels = [...(productData.stockLevels || [])];
+
+                    const fromWhIndex = stockLevels.findIndex(sl => sl.warehouseId === transfer.fromWarehouseId);
+                    const toWhIndex = stockLevels.findIndex(sl => sl.warehouseId === transfer.toWarehouseId);
+
+                    if (toWhIndex === -1 || stockLevels[toWhIndex].quantity < item.quantity) {
+                        throw new Error(`Impossible d'annuler : Stock insuffisant dans l'entrepôt de destination (${getWarehouseName(transfer.toWarehouseId)}) pour ${productData.name}.`);
+                    }
+
+                    stockLevels[toWhIndex].quantity -= item.quantity;
+                    if (fromWhIndex > -1) {
+                        stockLevels[fromWhIndex].quantity += item.quantity;
+                    } else {
+                        stockLevels.push({ warehouseId: transfer.fromWarehouseId, quantity: item.quantity });
+                    }
+
+                    updates.push({ ref, stockLevels });
+                }
+
+                for (const update of updates) {
+                    transaction.update(update.ref, { stockLevels: update.stockLevels });
+                }
+                transaction.delete(transferRef);
+            });
+
+            await fetchData();
+            setError(null);
+        } catch (err: any) {
+            setError(`Erreur lors de la suppression : ${err.message}`);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleEditTransfer = async (transfer: WarehouseTransfer) => {
+        if (!window.confirm("Pour modifier ce transfert, il sera d'abord annulé (stock rétabli) et le formulaire sera pré-rempli. Continuer ?")) return;
+
+        setLoading(true);
+        try {
+            await runTransaction(db, async (transaction) => {
+                const transferRef = doc(db, 'warehouseTransfers', transfer.id);
+                const transferDoc = await transaction.get(transferRef);
+                if (!transferDoc.exists()) throw new Error("Transfert introuvable.");
+
+                const itemsToRevert = transfer.items || (transfer.productId ? [{ productId: transfer.productId, quantity: transfer.quantity || 0 }] : []);
+                
+                const productReads = itemsToRevert.map(item => ({ ref: doc(db, 'products', item.productId), item }));
+                const productDocs = await Promise.all(productReads.map(p => transaction.get(p.ref)));
+
+                const updates = [];
+                for (let i = 0; i < productDocs.length; i++) {
+                    const docSnapshot = productDocs[i];
+                    const { item, ref } = productReads[i];
+                    if (!docSnapshot.exists()) throw new Error(`Produit ${item.productId} non trouvé.`);
+
+                    const productData = docSnapshot.data() as Product;
+                    const stockLevels = [...(productData.stockLevels || [])];
+                    const fromWhIndex = stockLevels.findIndex(sl => sl.warehouseId === transfer.fromWarehouseId);
+                    const toWhIndex = stockLevels.findIndex(sl => sl.warehouseId === transfer.toWarehouseId);
+
+                    if (toWhIndex === -1 || stockLevels[toWhIndex].quantity < item.quantity) {
+                        throw new Error(`Impossible de modifier : Stock insuffisant dans l'entrepôt de destination pour ${productData.name}.`);
+                    }
+
+                    stockLevels[toWhIndex].quantity -= item.quantity;
+                    if (fromWhIndex > -1) {
+                        stockLevels[fromWhIndex].quantity += item.quantity;
+                    } else {
+                        stockLevels.push({ warehouseId: transfer.fromWarehouseId, quantity: item.quantity });
+                    }
+                    updates.push({ ref, stockLevels });
+                }
+
+                for (const update of updates) {
+                    transaction.update(update.ref, { stockLevels: update.stockLevels });
+                }
+                transaction.delete(transferRef);
+            });
+
+            await fetchData();
+            setFormState({
+                fromWarehouseId: transfer.fromWarehouseId,
+                toWarehouseId: transfer.toWarehouseId
+            });
+            
+            const itemsToLoad = transfer.items || (transfer.productId ? [{ productId: transfer.productId, quantity: transfer.quantity || 0 }] : []);
+            setTransferItems(itemsToLoad);
+            
+            setError(null);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+
+        } catch (err: any) {
+            setError(`Erreur lors de la préparation à la modification : ${err.message}`);
+        } finally {
+            setLoading(false);
+        }
+    };
     
     const filteredTransfers = useMemo(() => {
         return transfers.filter(t => {
@@ -498,13 +622,33 @@ const TransfersPage: React.FC = () => {
                                             </span>
                                         </td>
                                         <td className="px-6 py-4 text-right">
-                                            <button 
-                                                onClick={() => handleViewDetails(t)}
-                                                className="text-blue-600 hover:text-blue-800 bg-blue-50 p-2 rounded-lg transition-colors"
-                                                title="Voir les détails"
-                                            >
-                                                <EyeIcon className="w-5 h-5" />
-                                            </button>
+                                            <div className="flex items-center justify-end space-x-2">
+                                                <button 
+                                                    onClick={() => handleViewDetails(t)}
+                                                    className="text-blue-600 hover:text-blue-800 bg-blue-50 p-2 rounded-lg transition-colors"
+                                                    title="Voir les détails"
+                                                >
+                                                    <EyeIcon className="w-5 h-5" />
+                                                </button>
+                                                {hasPermission('transfers') && (
+                                                    <>
+                                                        <button 
+                                                            onClick={() => handleEditTransfer(t)}
+                                                            className="text-yellow-600 hover:text-yellow-800 bg-yellow-50 p-2 rounded-lg transition-colors"
+                                                            title="Modifier (Annuler & Recréer)"
+                                                        >
+                                                            <EditIcon className="w-5 h-5" />
+                                                        </button>
+                                                        <button 
+                                                            onClick={() => handleDeleteTransfer(t)}
+                                                            className="text-red-600 hover:text-red-800 bg-red-50 p-2 rounded-lg transition-colors"
+                                                            title="Supprimer (Annuler transfert)"
+                                                        >
+                                                            <DeleteIcon className="w-5 h-5" />
+                                                        </button>
+                                                    </>
+                                                )}
+                                            </div>
                                         </td>
                                     </tr>
                                 ))}
