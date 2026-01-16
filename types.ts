@@ -251,16 +251,19 @@ export interface StockAdjustment {
   createdByUserId: string;
 }
 
-/**
- * Stock movement between two warehouses.
- */
+export interface WarehouseTransferItem {
+  productId: string;
+  quantity: number;
+}
+
 export interface WarehouseTransfer {
   id: string;
   date: string;
   fromWarehouseId: string;
   toWarehouseId: string;
-  productId: string;
-  quantity: number;
+  items?: WarehouseTransferItem[];
+  productId?: string; // Legacy support
+  quantity?: number;  // Legacy support
   status: string;
 }
 

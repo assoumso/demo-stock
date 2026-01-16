@@ -4,7 +4,7 @@ import { db } from '../firebase';
 import { collection, getDocs, query, where, doc, runTransaction, DocumentData } from 'firebase/firestore';
 import { Customer, Supplier, Sale, Purchase, SalePayment, Payment, PaymentMethod, PaymentStatus, AppSettings } from '../types';
 import { useAuth } from '../hooks/useAuth';
-import { SearchIcon, CustomersIcon, SuppliersIcon, WarningIcon, CheckIcon } from '../constants';
+import { SearchIcon, CustomersIcon, SuppliersIcon, WarningIcon, CheckIcon, EditIcon, DeleteIcon } from '../constants';
 import Modal from '../components/Modal';
 import { PaymentReceipt } from '../components/PaymentReceipt';
 import { useReactToPrint } from 'react-to-print';
@@ -45,6 +45,11 @@ const PaymentsPage: React.FC = () => {
     const [paymentNote, setPaymentNote] = useState('');
     const [selectedInvoiceId, setSelectedInvoiceId] = useState<string>('');
     const [isSubmitting, setIsSubmitting] = useState(false);
+
+    // History State
+    const [paymentHistory, setPaymentHistory] = useState<any[]>([]);
+    const [editingPayment, setEditingPayment] = useState<any | null>(null);
+    const [showEditModal, setShowEditModal] = useState(false);
 
     useEffect(() => {
         const fetchBaseData = async () => {
@@ -144,6 +149,224 @@ const PaymentsPage: React.FC = () => {
         };
         fetchPartnerInvoices();
     }, [selectedPartner, activeTab]);
+
+    // Fetch history
+    const fetchHistory = async () => {
+        try {
+            const collectionName = activeTab === 'clients' ? 'salePayments' : 'purchasePayments';
+            const q = query(collection(db, collectionName), where("date", ">=", new Date(new Date().setMonth(new Date().getMonth() - 3)).toISOString())); // Last 3 months
+            const snap = await getDocs(q);
+            
+            // Need to join with sales/purchases to get reference numbers if possible, or at least partner name
+            // For simplicity, we filter by selectedPartner if set, otherwise show all.
+            // But we need to know WHO paid. The Payment struct doesn't strictly have customerId/supplierId, only via the Invoice.
+            // Wait, SalePayment has saleId. Sale has customerId.
+            // This is N+1 problem.
+            // Optimized approach: We fetched all customers/suppliers. We can't easily link back without fetching the invoice.
+            // Let's just fetch ALL relevant invoices? No, too big.
+            // Let's rely on the fact that if a partner is selected, we filter. If not, we might show "Chargement..." or limited info.
+            
+            // Better: When fetching payments, fetch their related invoices in batches?
+            // Or just fetch payments for the selected partner?
+            // The requirement implies a general table.
+            
+            // Let's try to fetch payments and then fetch the related invoices to get names/refs.
+            let payments = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+            payments.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+            
+            if (selectedPartner) {
+                // Filter by payments linked to invoices of this partner
+                // We need to know which invoices belong to this partner.
+                // We already fetched `unpaidInvoices`. But what about PAID invoices?
+                // We need to fetch ALL invoices for this partner to filter history correctly?
+                // Or we can query payments where `saleId` is in list of partner's sales.
+                
+                const invoiceCollection = activeTab === 'clients' ? 'sales' : 'purchases';
+                const partnerField = activeTab === 'clients' ? 'customerId' : 'supplierId';
+                const qInv = query(collection(db, invoiceCollection), where(partnerField, "==", selectedPartner.id));
+                const snapInv = await getDocs(qInv);
+                const partnerInvoiceIds = new Set(snapInv.docs.map(d => d.id));
+                // Add opening balance ID
+                partnerInvoiceIds.add(`OPENING_BALANCE_${selectedPartner.id}`);
+                
+                const idField = activeTab === 'clients' ? 'saleId' : 'purchaseId';
+                payments = payments.filter(p => partnerInvoiceIds.has(p[idField]));
+            } else {
+                payments = payments.slice(0, 50); // Limit to 50 recent if no partner selected
+            }
+            
+            // Enhance with invoice info
+            const invoiceCollection = activeTab === 'clients' ? 'sales' : 'purchases';
+            const enhancedPayments = await Promise.all(payments.map(async (p) => {
+                const idField = activeTab === 'clients' ? 'saleId' : 'purchaseId';
+                const invId = p[idField];
+                
+                if (invId.startsWith('OPENING_BALANCE_')) {
+                    return { ...p, invoiceRef: "SOLDE D'OUVERTURE", partnerName: "N/A" };
+                }
+                
+                // Check if we have it in unpaidInvoices? Unlikely if it's paid.
+                // Fetch individually (cache could be used but simple fetch for now)
+                const invRef = doc(db, invoiceCollection, invId);
+                const invSnap = await getDocs(query(collection(db, invoiceCollection), where('__name__', '==', invId))); // using query to avoid try/catch on doc get if easier, but doc get is fine.
+                // actually getDoc is better
+                // But let's use the one we have
+                // We can't easily get partner name without the invoice.
+                
+                // To avoid N fetches, we could fetch all sales/purchases once? No.
+                // We will accept some loading time or missing info if not selected.
+                // If selectedPartner is set, we know the name.
+                
+                let refNum = '...';
+                let pName = selectedPartner?.name || '...';
+                
+                if (!selectedPartner) {
+                    // We need to fetch the invoice to get partner ID then partner name
+                    // This is heavy. Maybe just show Reference?
+                    // Let's fetch invoice data.
+                    try {
+                         const d = await import('firebase/firestore').then(mod => mod.getDoc(invRef));
+                         if (d.exists()) {
+                             const data = d.data() as any;
+                             refNum = data.referenceNumber;
+                             if (!selectedPartner) {
+                                 const partnerList = activeTab === 'clients' ? customers : suppliers;
+                                 const partnerId = activeTab === 'clients' ? data.customerId : data.supplierId;
+                                 pName = partnerList.find(x => x.id === partnerId)?.name || 'Inconnu';
+                             }
+                         }
+                    } catch (e) {}
+                } else {
+                     // We can try to find ref in unpaidInvoices, otherwise fetch
+                     const inv = unpaidInvoices.find(i => i.id === invId);
+                     if (inv) refNum = inv.referenceNumber;
+                     else {
+                         try {
+                             const d = await import('firebase/firestore').then(mod => mod.getDoc(invRef));
+                             if (d.exists()) refNum = d.data()?.referenceNumber;
+                         } catch (e) {}
+                     }
+                }
+                
+                return { ...p, invoiceRef: refNum, partnerName: pName };
+            }));
+            
+            setPaymentHistory(enhancedPayments);
+        } catch (err) {
+            console.error("Error fetching history", err);
+        }
+    };
+
+    useEffect(() => {
+        fetchHistory();
+    }, [activeTab, selectedPartner, customers, suppliers]); // Refetch when tab or partner changes
+
+    const handleDeletePayment = async (paymentId: string, invoiceId: string, amount: number) => {
+        if (!window.confirm("Êtes-vous sûr de vouloir supprimer ce paiement ? Cela mettra à jour le solde de la facture.")) return;
+
+        try {
+            await runTransaction(db, async (transaction) => {
+                const collectionName = activeTab === 'clients' ? 'sales' : 'purchases';
+                const paymentCollection = activeTab === 'clients' ? 'salePayments' : 'purchasePayments';
+                
+                // 1. Revert invoice
+                if (!invoiceId.startsWith('OPENING_BALANCE_')) {
+                    const invoiceRef = doc(db, collectionName, invoiceId);
+                    const invoiceDoc = await transaction.get(invoiceRef);
+
+                    if (invoiceDoc.exists()) {
+                         const invData = invoiceDoc.data() as any;
+                         const newPaid = Math.max(0, (invData.paidAmount || 0) - amount);
+                         const newStatus = (invData.grandTotal - newPaid) <= 0.1 ? 'Payé' : (newPaid > 0.1 ? 'Partiel' : 'En attente');
+                         
+                         transaction.update(invoiceRef, {
+                             paidAmount: newPaid,
+                             paymentStatus: newStatus
+                         });
+                    }
+                }
+
+                // 2. Delete payment
+                const paymentRef = doc(db, paymentCollection, paymentId);
+                transaction.delete(paymentRef);
+            });
+            
+            setSuccess("Paiement supprimé avec succès");
+            fetchHistory(); // Refresh
+            // Also refresh partner invoices if selected
+            if (selectedPartner) {
+                // Trigger re-fetch of partner invoices by toggling selection or logic?
+                // The useEffect on [selectedPartner] might not trigger if object is same.
+                // We can force it by calling a refresh function or relying on state update.
+                // Let's force update
+                setSelectedPartner({...selectedPartner}); 
+            }
+            setTimeout(() => setSuccess(null), 3000);
+        } catch (e: any) {
+            console.error(e);
+            setError("Erreur lors de la suppression: " + e.message);
+        }
+    };
+
+    const handleEditClick = (payment: any) => {
+        setEditingPayment({ ...payment, newAmount: payment.amount });
+        setShowEditModal(true);
+    };
+
+    const handleSaveEdit = async () => {
+        if (!editingPayment) return;
+        const { id, amount, newAmount, date, method, notes, invoiceRef, saleId, purchaseId } = editingPayment;
+        const invoiceId = activeTab === 'clients' ? saleId : purchaseId;
+
+        try {
+            await runTransaction(db, async (transaction) => {
+                const collectionName = activeTab === 'clients' ? 'sales' : 'purchases';
+                const paymentCollection = activeTab === 'clients' ? 'salePayments' : 'purchasePayments';
+                
+                // 1. Check Invoice if amount changed
+                if (Math.abs(newAmount - amount) > 0.1 && !invoiceId.startsWith('OPENING_BALANCE_')) {
+                    const invoiceRef = doc(db, collectionName, invoiceId);
+                    const invoiceDoc = await transaction.get(invoiceRef);
+                    
+                    if (invoiceDoc.exists()) {
+                        const invData = invoiceDoc.data() as any;
+                        const diff = newAmount - amount;
+                        
+                        // Check if overpayment
+                        if (invData.paidAmount + diff > invData.grandTotal + 0.1) {
+                             throw new Error("Le nouveau montant dépasse le reste à payer de la facture.");
+                        }
+
+                        const newPaid = Math.max(0, invData.paidAmount + diff);
+                        const newStatus = (invData.grandTotal - newPaid) <= 0.1 ? 'Payé' : (newPaid > 0.1 ? 'Partiel' : 'En attente');
+                        
+                        transaction.update(invoiceRef, {
+                            paidAmount: newPaid,
+                            paymentStatus: newStatus
+                        });
+                    }
+                }
+
+                // 2. Update Payment
+                const paymentRef = doc(db, paymentCollection, id);
+                transaction.update(paymentRef, {
+                    amount: newAmount,
+                    date: date,
+                    method: method,
+                    notes: notes || ''
+                });
+            });
+
+            setSuccess("Paiement modifié avec succès");
+            setShowEditModal(false);
+            setEditingPayment(null);
+            fetchHistory();
+            if (selectedPartner) setSelectedPartner({...selectedPartner});
+            setTimeout(() => setSuccess(null), 3000);
+        } catch (e: any) {
+            setError("Erreur modification: " + e.message);
+        }
+    };
 
     const filteredSuggestions = useMemo(() => {
         if (!searchTerm || selectedPartner) return [];
@@ -337,6 +560,7 @@ const PaymentsPage: React.FC = () => {
 
             setTimeout(() => setSuccess(null), 3000);
             handleReset();
+            fetchHistory(); // Refresh history
         } catch (err: any) {
             setError(err.message);
         } finally {
@@ -536,6 +760,134 @@ const PaymentsPage: React.FC = () => {
                     </div>
                 </div>
             </Modal>
+
+            {/* Edit Payment Modal */}
+            <Modal isOpen={showEditModal} onClose={() => setShowEditModal(false)} title="MODIFIER LE PAIEMENT" maxWidth="max-w-lg">
+                {editingPayment && (
+                    <div className="space-y-4">
+                        <div>
+                            <label className="block text-xs font-black uppercase text-gray-400 mb-1">Montant</label>
+                            <input 
+                                type="number" 
+                                value={editingPayment.newAmount} 
+                                onChange={e => setEditingPayment({...editingPayment, newAmount: parseFloat(e.target.value) || 0})}
+                                className="w-full p-3 border rounded-xl dark:bg-gray-700 font-bold"
+                            />
+                            <p className="text-xs text-red-500 mt-1">Attention: Modifier le montant impactera le reste à payer de la facture.</p>
+                        </div>
+                        <div>
+                            <label className="block text-xs font-black uppercase text-gray-400 mb-1">Date</label>
+                            <input 
+                                type="date" 
+                                value={editingPayment.date ? new Date(editingPayment.date).toISOString().split('T')[0] : ''} 
+                                onChange={e => setEditingPayment({...editingPayment, date: e.target.value})}
+                                className="w-full p-3 border rounded-xl dark:bg-gray-700"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-xs font-black uppercase text-gray-400 mb-1">Mode</label>
+                            <select 
+                                value={editingPayment.method} 
+                                onChange={e => setEditingPayment({...editingPayment, method: e.target.value})}
+                                className="w-full p-3 border rounded-xl dark:bg-gray-700"
+                            >
+                                {['Espèces', 'Virement bancaire', 'Mobile Money', 'Autre'].map(m => (
+                                    <option key={m} value={m}>{m}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <div>
+                            <label className="block text-xs font-black uppercase text-gray-400 mb-1">Notes</label>
+                            <textarea 
+                                value={editingPayment.notes} 
+                                onChange={e => setEditingPayment({...editingPayment, notes: e.target.value})}
+                                className="w-full p-3 border rounded-xl dark:bg-gray-700"
+                                rows={2}
+                            />
+                        </div>
+                        <div className="flex justify-end pt-4">
+                            <button 
+                                onClick={handleSaveEdit}
+                                className="px-6 py-2 bg-primary-600 text-white rounded-lg font-bold hover:bg-primary-700"
+                            >
+                                Enregistrer
+                            </button>
+                        </div>
+                    </div>
+                )}
+            </Modal>
+        
+            {/* Payment History Table */}
+            <div className="mt-12">
+                <h2 className="text-xl font-black uppercase text-gray-900 dark:text-white mb-4">
+                    Historique des {activeTab === 'clients' ? 'Versements Clients' : 'Paiements Fournisseurs'}
+                    {selectedPartner && <span className="text-primary-600"> - {selectedPartner.name}</span>}
+                </h2>
+                <div className="bg-white dark:bg-gray-800 rounded-3xl shadow-xl border dark:border-gray-700 overflow-hidden">
+                    <div className="overflow-x-auto">
+                        <table className="w-full">
+                            <thead className="bg-gray-50 dark:bg-gray-900/50">
+                                <tr>
+                                    <th className="px-6 py-4 text-left text-xs font-black uppercase text-gray-400 tracking-wider">Date</th>
+                                    <th className="px-6 py-4 text-left text-xs font-black uppercase text-gray-400 tracking-wider">Partenaire</th>
+                                    <th className="px-6 py-4 text-left text-xs font-black uppercase text-gray-400 tracking-wider">Facture / Réf</th>
+                                    <th className="px-6 py-4 text-left text-xs font-black uppercase text-gray-400 tracking-wider">Montant</th>
+                                    <th className="px-6 py-4 text-left text-xs font-black uppercase text-gray-400 tracking-wider">Mode</th>
+                                    <th className="px-6 py-4 text-right text-xs font-black uppercase text-gray-400 tracking-wider">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                                {paymentHistory.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={6} className="px-6 py-8 text-center text-gray-400 text-sm italic">
+                                            Aucun historique trouvé pour cette période.
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    paymentHistory.map((payment) => (
+                                        <tr key={payment.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-700 dark:text-gray-300">
+                                                {new Date(payment.date).toLocaleDateString('fr-FR')}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-900 dark:text-white">
+                                                {payment.partnerName || '...'}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                                {payment.invoiceRef || '...'}
+                                                {payment.notes && <span className="block text-xs text-gray-400 italic truncate max-w-[150px]">{payment.notes}</span>}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-black text-primary-600">
+                                                {formatCurrency(payment.amount)}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                <span className="px-2 py-1 bg-gray-100 dark:bg-gray-700 rounded text-xs font-bold text-gray-600 dark:text-gray-300">
+                                                    {payment.method}
+                                                </span>
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
+                                                <button 
+                                                    onClick={() => handleEditClick(payment)}
+                                                    className="text-blue-600 hover:text-blue-900 p-1 bg-blue-50 rounded-lg transition-colors"
+                                                    title="Modifier"
+                                                >
+                                                    <EditIcon className="w-4 h-4" />
+                                                </button>
+                                                <button 
+                                                    onClick={() => handleDeletePayment(payment.id, activeTab === 'clients' ? payment.saleId : payment.purchaseId, payment.amount)}
+                                                    className="text-red-600 hover:text-red-900 p-1 bg-red-50 rounded-lg transition-colors"
+                                                    title="Supprimer"
+                                                >
+                                                    <DeleteIcon className="w-4 h-4" />
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
         </div>
     );
 };
