@@ -26,7 +26,6 @@ const UsersPage = lazy(() => import('./pages/UsersPage'));
 const RolesPage = lazy(() => import('./pages/RolesPage'));
 const WarehousesPage = lazy(() => import('./pages/WarehousesPage'));
 const TransfersPage = lazy(() => import('./pages/TransfersPage'));
-const TestPage = lazy(() => import('./pages/TestPage'));
 const SuppliersPage = lazy(() => import('./pages/SuppliersPage'));
 const SupplierFormPage = lazy(() => import('./pages/SupplierFormPage'));
 const SupplierAccountPage = lazy(() => import('./pages/SupplierAccountPage'));
