@@ -81,7 +81,13 @@ const TransfersPage: React.FC = () => {
 
     const handleFormChange = (e: React.ChangeEvent<HTMLSelectElement | HTMLInputElement>) => {
         const { name, value } = e.target;
-        setFormState(prev => ({...prev, [name]: value }));
+        setFormState(prev => {
+            // Si on change l'entrepôt de départ et qu'il est identique à celui d'arrivée, on réinitialise l'arrivée
+            if (name === 'fromWarehouseId' && value === prev.toWarehouseId) {
+                return { ...prev, [name]: value, toWarehouseId: '' };
+            }
+            return { ...prev, [name]: value };
+        });
     };
 
     const handleItemChange = (e: React.ChangeEvent<HTMLSelectElement | HTMLInputElement>) => {
@@ -326,7 +332,7 @@ const TransfersPage: React.FC = () => {
                             <label className="block text-sm">À (Entrepôt)</label>
                             <select name="toWarehouseId" value={formState.toWarehouseId} onChange={handleFormChange} required className="w-full mt-1 border rounded p-2 dark:bg-gray-700">
                                 <option value="">-- Sélectionner --</option>
-                                {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                                {warehouses.filter(w => w.id !== formState.fromWarehouseId).map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
                             </select>
                         </div>
 
