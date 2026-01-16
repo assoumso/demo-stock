@@ -76,6 +76,12 @@ export const permissionConfig = [
     ],
   },
   {
+    group: 'Trésorerie',
+    permissions: [
+      { id: 'bank', name: "Gérer la Banque (Opérations)" },
+    ],
+  },
+  {
     group: 'Configuration',
     permissions: [
       { id: 'users', name: "Gérer les utilisateurs (Créer, Modifier, Supprimer)" },

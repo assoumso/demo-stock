@@ -7,15 +7,17 @@ import { Pagination } from '../components/Pagination';
 import { AdjustmentsIcon } from '../constants';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
+import { useData } from '../context/DataContext';
 
 const InventoryPage: React.FC = () => {
     const navigate = useNavigate();
     const { hasPermission } = useAuth();
-    const [products, setProducts] = useState<Product[]>([]);
-    const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
-    const [categories, setCategories] = useState<Category[]>([]);
-    const [brands, setBrands] = useState<Brand[]>([]);
-    const [loading, setLoading] = useState(true);
+    const { products, warehouses, categories, brands, suppliers, loading: dataLoading } = useData();
+    const [loading, setLoading] = useState(true); // Keep local loading if needed for transition or just use dataLoading
+
+    // Sync local loading with dataLoading
+    useEffect(() => { setLoading(dataLoading); }, [dataLoading]);
+    
     const [error, setError] = useState<string | null>(null);
 
     const [searchTerm, setSearchTerm] = useState('');
@@ -25,30 +27,7 @@ const InventoryPage: React.FC = () => {
     const [currentPage, setCurrentPage] = useState(1);
     const ITEMS_PER_PAGE = 10;
 
-    useEffect(() => {
-        const fetchData = async () => {
-            setLoading(true);
-            setError(null);
-            try {
-                const [productsSnap, warehousesSnap, categoriesSnap, brandsSnap] = await Promise.all([
-                    getDocs(collection(db, "products")),
-                    getDocs(collection(db, "warehouses")),
-                    getDocs(collection(db, "categories")),
-                    getDocs(collection(db, "brands")),
-                ]);
-                setProducts(productsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product)));
-                setWarehouses(warehousesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Warehouse)));
-                setCategories(categoriesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Category)));
-                setBrands(brandsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Brand)));
-            } catch (err) {
-                setError("Impossible de charger les données de stock.");
-                console.error(err);
-            } finally {
-                setLoading(false);
-            }
-        };
-        fetchData();
-    }, []);
+    // Removed manual fetch useEffect as we use useData
     
     useEffect(() => {
         setCurrentPage(1);
@@ -160,6 +139,9 @@ const InventoryPage: React.FC = () => {
                                         <td className="px-6 py-4 whitespace-nowrap">
                                             <div className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-tight">{product.name}</div>
                                             <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest">{product.sku}</div>
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-xs font-bold text-gray-500 dark:text-gray-400 uppercase">
+                                            {getSupplierName(product.supplierId)}
                                         </td>
                                         {warehouses.map(wh => {
                                             const qty = getStockForWarehouse(product, wh.id);

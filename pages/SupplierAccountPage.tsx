@@ -23,7 +23,7 @@ interface AccountMovement {
 
 const formatCurrency = (v: number) => new Intl.NumberFormat('fr-FR').format(v).replace(/\u202f/g, ' ') + ' FCFA';
 
-const SupplierAccountPage: React.FC = () => {
+    const SupplierAccountPage: React.FC = () => {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
     const { user } = useAuth();
@@ -36,6 +36,10 @@ const SupplierAccountPage: React.FC = () => {
     const [summary, setSummary] = useState({ totalPurchased: 0, totalPaid: 0, balance: 0 });
     const [unpaidPurchases, setUnpaidPurchases] = useState<Purchase[]>([]);
     const [openingBalanceRemaining, setOpeningBalanceRemaining] = useState(0);
+
+    // Calcul des totaux
+    const totalDebit = React.useMemo(() => movements.reduce((sum, m) => sum + m.debit, 0), [movements]);
+    const totalCredit = React.useMemo(() => movements.reduce((sum, m) => sum + m.credit, 0), [movements]);
 
     // Modal Payment
     const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
@@ -591,6 +595,15 @@ const SupplierAccountPage: React.FC = () => {
                                 </tr>
                             ))}
                         </tbody>
+                        <tfoot className="border-t-2 border-gray-300 dark:border-gray-600">
+                            <tr className="bg-blue-50 dark:bg-blue-900/20">
+                                <td colSpan={3} className="px-4 py-4 text-right text-xs font-black uppercase text-gray-600 dark:text-gray-400 tracking-widest">Totaux</td>
+                                <td className="px-4 py-4 text-right text-xs font-black text-green-600">{formatCurrency(totalDebit)}</td>
+                                <td className="px-4 py-4 text-right text-xs font-black text-red-600">{formatCurrency(totalCredit)}</td>
+                                <td className="px-4 py-4 text-right text-xs font-black text-primary-600">{formatCurrency(summary.balance)}</td>
+                                <td></td>
+                            </tr>
+                        </tfoot>
                     </table>
                 </div>
             </div>

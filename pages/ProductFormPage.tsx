@@ -2,7 +2,7 @@ import React, { useState, useEffect, FormEvent } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { db } from '../firebase';
 import { collection, doc, getDoc, getDocs, addDoc, updateDoc, DocumentData } from 'firebase/firestore';
-import { Product, Category, Brand, Unit, Warehouse, AppSettings } from '../types';
+import { Product, Category, Brand, Unit, Warehouse, AppSettings, Supplier } from '../types';
 import { ImageIcon } from '../constants';
 
 const ProductFormPage: React.FC = () => {
@@ -14,6 +14,7 @@ const ProductFormPage: React.FC = () => {
     const [categories, setCategories] = useState<Category[]>([]);
     const [brands, setBrands] = useState<Brand[]>([]);
     const [units, setUnits] = useState<Unit[]>([]);
+    const [suppliers, setSuppliers] = useState<Supplier[]>([]);
     const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -24,12 +25,13 @@ const ProductFormPage: React.FC = () => {
     useEffect(() => {
         const fetchDependencies = async () => {
             try {
-                const [categoriesSnapshot, brandsSnapshot, unitsSnapshot, warehousesSnapshot, settingsSnapshot] = await Promise.all([
+                const [categoriesSnapshot, brandsSnapshot, unitsSnapshot, warehousesSnapshot, settingsSnapshot, suppliersSnapshot] = await Promise.all([
                     getDocs(collection(db, "categories")),
                     getDocs(collection(db, "brands")),
                     getDocs(collection(db, "units")),
                     getDocs(collection(db, "warehouses")),
-                    getDoc(doc(db, "settings", "app-config"))
+                    getDoc(doc(db, "settings", "app-config")),
+                    getDocs(collection(db, "suppliers"))
                 ]);
                 
                 const fetchedCategories = categoriesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Category));
@@ -40,6 +42,9 @@ const ProductFormPage: React.FC = () => {
                 
                 const fetchedUnits = unitsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Unit));
                 setUnits(fetchedUnits);
+
+                const fetchedSuppliers = suppliersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Supplier));
+                setSuppliers(fetchedSuppliers);
 
                 const fetchedWarehouses = warehousesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Warehouse));
                 setWarehouses(fetchedWarehouses);

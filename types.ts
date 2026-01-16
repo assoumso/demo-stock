@@ -101,6 +101,18 @@ export interface Category {
   name: string;
 }
 
+export interface BankTransaction {
+  id: string;
+  date: string;
+  type: 'deposit' | 'withdrawal';
+  amount: number;
+  description: string;
+  reference?: string;
+  createdByUserId: string;
+  category?: string;
+  attachmentUrl?: string;
+}
+
 /**
  * Product brand.
  */
@@ -265,6 +277,28 @@ export interface WarehouseTransfer {
   productId?: string; // Legacy support
   quantity?: number;  // Legacy support
   status: string;
+  driverName?: string;
+}
+
+export interface CreditNoteItem {
+  productId: string;
+  productName?: string;
+  quantity: number;
+  price: number;
+  subtotal: number;
+}
+
+export interface CreditNote {
+  id: string;
+  referenceNumber: string;
+  date: string;
+  customerId: string;
+  warehouseId?: string; // Optional, only if items are returned
+  items: CreditNoteItem[];
+  amount: number;
+  reason: string;
+  paymentId?: string; // Linked payment record ID
+  createdByUserId: string;
 }
 
 /**
@@ -300,4 +334,6 @@ export interface AppSettings {
   defaultTaxRate: number;
   defaultPosCustomerId: string;
   themeColor: string;
+  bankOpeningBalance?: number;
+  bankOpeningBalanceDate?: string;
 }

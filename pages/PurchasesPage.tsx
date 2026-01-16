@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { db, storage } from '../firebase';
-import { collection, getDocs, deleteDoc, doc, writeBatch, query, orderBy, where, runTransaction, DocumentData, DocumentReference } from 'firebase/firestore';
+import { collection, getDocs, deleteDoc, doc, writeBatch, query, orderBy, where, runTransaction, limit, DocumentData, DocumentReference } from 'firebase/firestore';
 // FIX: Imported modular storage functions to replace deprecated storage.ref() usage.
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { Purchase, Supplier, Payment, PaymentMethod, PaymentStatus, Warehouse, Product } from '../types';
@@ -51,12 +51,13 @@ const PurchasesPage: React.FC = () => {
         attachmentFile: null as File | null
     });
     const [isSubmittingPayment, setIsSubmittingPayment] = useState(false);
+    const [limitCount, setLimitCount] = useState(50);
 
     const fetchData = async () => {
         if (!loading) setLoading(true);
         setError(null);
         try {
-            const purchasesQuery = query(collection(db, "purchases"), orderBy("date", "desc"));
+            const purchasesQuery = query(collection(db, "purchases"), orderBy("date", "desc"), limit(limitCount));
             const [purchasesSnapshot, suppliersSnapshot, warehousesSnapshot] = await Promise.all([
                 getDocs(purchasesQuery),
                 getDocs(collection(db, "suppliers")),
@@ -75,7 +76,7 @@ const PurchasesPage: React.FC = () => {
 
     useEffect(() => {
         fetchData();
-    }, []);
+    }, [limitCount]);
     
     useEffect(() => { setCurrentPage(1); }, [filters]);
     useEffect(() => { setSelectedIds([]); }, [currentPage]);
@@ -261,12 +262,27 @@ const PurchasesPage: React.FC = () => {
     const getPurchaseStatusBadge = (s: Purchase['purchaseStatus']) => ({'Reçu': 'bg-green-100 text-green-800','Commandé': 'bg-blue-100 text-blue-800','En attente': 'bg-yellow-100 text-yellow-800'}[s] || '');
     const remainingBalance = selectedPurchase ? selectedPurchase.grandTotal - selectedPurchase.paidAmount : 0;
 
+    // Calcul des totaux
+    const totalGlobalAmount = useMemo(() => filteredPurchases.reduce((sum, p) => sum + p.grandTotal, 0), [filteredPurchases]);
+    const totalGlobalPaid = useMemo(() => filteredPurchases.reduce((sum, p) => sum + p.paidAmount, 0), [filteredPurchases]);
+    const totalGlobalBalance = useMemo(() => filteredPurchases.reduce((sum, p) => sum + (p.grandTotal - p.paidAmount), 0), [filteredPurchases]);
+
+    const totalPageAmount = useMemo(() => paginatedPurchases.reduce((sum, p) => sum + p.grandTotal, 0), [paginatedPurchases]);
+    const totalPagePaid = useMemo(() => paginatedPurchases.reduce((sum, p) => sum + p.paidAmount, 0), [paginatedPurchases]);
+    const totalPageBalance = useMemo(() => paginatedPurchases.reduce((sum, p) => sum + (p.grandTotal - p.paidAmount), 0), [paginatedPurchases]);
+
     return (
         <div>
             <div className="flex justify-between items-center mb-6">
-                <h1 className="text-2xl font-semibold text-gray-900 dark:text-white">Liste des Achats</h1>
+                <div>
+                    <h1 className="text-2xl font-semibold text-gray-900 dark:text-white">Liste des Achats</h1>
+                    <p className="text-gray-500 text-xs mt-1">Affichage des {limitCount} derniers achats</p>
+                </div>
                  <div className="flex items-center space-x-2">
                     {selectedIds.length > 0 && <button onClick={() => setIsBulkDeleteModalOpen(true)} disabled={!!isProcessing} className="flex items-center px-4 py-2 text-sm text-white bg-red-600 rounded-md hover:bg-red-700 disabled:bg-red-300"><DeleteIcon className="w-5 h-5 mr-2" />Supprimer ({selectedIds.length})</button>}
+                    <button onClick={() => setLimitCount(prev => prev + 500)} className="px-4 py-2 bg-gray-100 text-gray-600 rounded-md hover:bg-gray-200 font-bold uppercase text-xs transition-colors">
+                        Charger +
+                    </button>
                     <button onClick={() => setShowAll(!showAll)} className="px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300 font-bold uppercase text-xs transition-colors">
                         {showAll ? 'Vue par page' : 'Tout afficher'}
                     </button>
@@ -324,6 +340,22 @@ const PurchasesPage: React.FC = () => {
                             </tr>
                         ))}
                     </tbody>
+                    <tfoot className="border-t-2 border-gray-200 dark:border-gray-700">
+                        <tr className="bg-blue-50 dark:bg-blue-900/20 border-b dark:border-gray-700">
+                            <td colSpan={4} className="px-6 py-3 text-right text-xs font-black uppercase text-gray-500">Total Page</td>
+                            <td className="px-6 py-3 text-xs font-black text-gray-900 dark:text-white">{formatCurrency(totalPageAmount)}</td>
+                            <td className="px-6 py-3 text-xs font-black text-green-600">{formatCurrency(totalPagePaid)}</td>
+                            <td className="px-6 py-3 text-xs font-black text-red-600">{formatCurrency(totalPageBalance)}</td>
+                            <td colSpan={3}></td>
+                        </tr>
+                        <tr className="bg-blue-100 dark:bg-blue-900/40">
+                            <td colSpan={4} className="px-6 py-3 text-right text-xs font-black uppercase text-primary-600">Total Global</td>
+                            <td className="px-6 py-3 text-xs font-black text-primary-600">{formatCurrency(totalGlobalAmount)}</td>
+                            <td className="px-6 py-3 text-xs font-black text-green-600">{formatCurrency(totalGlobalPaid)}</td>
+                            <td className="px-6 py-3 text-xs font-black text-red-600">{formatCurrency(totalGlobalBalance)}</td>
+                            <td colSpan={3}></td>
+                        </tr>
+                    </tfoot>
                 </table>
             </div>
             {!showAll && <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} totalItems={filteredPurchases.length} itemsPerPage={itemsPerPage} />}

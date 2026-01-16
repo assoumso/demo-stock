@@ -2,8 +2,8 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { db } from '../firebase';
-import { doc, getDoc, collection, getDocs } from 'firebase/firestore';
-import { Sale, Customer, Product, AppSettings } from '../types';
+import { doc, getDoc, collection, getDocs, query, where } from 'firebase/firestore';
+import { Sale, Customer, Product, AppSettings, SalePayment, Warehouse } from '../types';
 import { PrintIcon, ArrowLeftIcon, WhatsappIcon } from '../constants';
 
 interface CompanyInfo {
@@ -23,9 +23,11 @@ interface InvoiceTemplateProps {
     customer: Customer | undefined;
     products: Product[];
     companyInfo: CompanyInfo;
+    payments: SalePayment[];
+    warehouse: Warehouse | undefined;
 }
 
-const InvoiceTemplate: React.FC<InvoiceTemplateProps> = ({ sale, customer, products, companyInfo }) => {
+const InvoiceTemplate: React.FC<InvoiceTemplateProps> = ({ sale, customer, products, companyInfo, payments, warehouse }) => {
     const formatCurrency = (value: number) => new Intl.NumberFormat('fr-FR').format(value).replace(/\u202f/g, ' ') + ` ${companyInfo.currencySymbol || 'FCFA'}`;
     const itemsSubtotal = sale.items.reduce((sum, item) => sum + item.subtotal, 0);
     const remainingBalance = sale.grandTotal - sale.paidAmount;
@@ -48,6 +50,7 @@ const InvoiceTemplate: React.FC<InvoiceTemplateProps> = ({ sale, customer, produ
                         <h2 className="text-2xl font-semibold text-gray-700">FACTURE DE VENTE</h2>
                         <p className="text-sm text-gray-500">Référence #: {sale.referenceNumber}</p>
                         <p className="text-sm text-gray-500">Date: {new Date(sale.date).toLocaleDateString('fr-FR')}</p>
+                        {warehouse && <p className="text-sm text-gray-500">Entrepôt: {warehouse.name}</p>}
                     </div>
                 </div>
 
@@ -55,6 +58,7 @@ const InvoiceTemplate: React.FC<InvoiceTemplateProps> = ({ sale, customer, produ
                     <h3 className="font-semibold text-gray-700 mb-2">Client</h3>
                     <p className="font-bold text-gray-800">{customer?.name || 'Client de passage'}</p>
                     <p className="text-sm text-gray-600">{customer?.phone} | {customer?.email}</p>
+                    {customer?.address && <p className="text-sm text-gray-600">{customer.address}</p>}
                 </div>
             </header>
             
@@ -83,7 +87,40 @@ const InvoiceTemplate: React.FC<InvoiceTemplateProps> = ({ sale, customer, produ
                     </tbody>
                 </table>
 
-                <div className="flex justify-end">
+                <div className="flex flex-col md:flex-row justify-between items-start gap-8">
+                    <div className="w-full md:w-1/2">
+                        {sale.notes && (
+                            <div className="mb-6 p-4 bg-gray-50 rounded border">
+                                <h4 className="font-semibold text-sm mb-2 text-gray-700">Notes / Observations:</h4>
+                                <p className="text-sm text-gray-600 whitespace-pre-wrap">{sale.notes}</p>
+                            </div>
+                        )}
+
+                        {payments.length > 0 && (
+                            <div className="mb-6">
+                                <h4 className="font-semibold text-sm mb-2 text-gray-700">Historique des Paiements:</h4>
+                                <table className="w-full text-xs border-collapse">
+                                    <thead>
+                                        <tr className="bg-gray-100 text-left">
+                                            <th className="p-2 border-b">Date</th>
+                                            <th className="p-2 border-b">Mode</th>
+                                            <th className="p-2 border-b text-right">Montant</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {payments.map(p => (
+                                            <tr key={p.id} className="border-b last:border-0">
+                                                <td className="p-2">{new Date(p.date).toLocaleDateString('fr-FR')}</td>
+                                                <td className="p-2">{p.method}</td>
+                                                <td className="p-2 text-right">{formatCurrency(p.amount)}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
+                    </div>
+
                     <div className="w-full md:w-1/2 lg:w-2/5">
                         <div className="flex justify-between py-2">
                             <span className="text-gray-600">Sous-total articles:</span>
@@ -102,6 +139,11 @@ const InvoiceTemplate: React.FC<InvoiceTemplateProps> = ({ sale, customer, produ
                             <span className="font-bold">Solde Restant:</span>
                             <span className="font-bold">{formatCurrency(remainingBalance)}</span>
                         </div>
+                         {sale.paymentDueDate && remainingBalance > 0 && (
+                            <div className="mt-2 text-right text-sm text-red-500 font-medium">
+                                Échéance: {new Date(sale.paymentDueDate).toLocaleDateString('fr-FR')}
+                            </div>
+                        )}
                     </div>
                 </div>
             </main>
@@ -119,7 +161,9 @@ const SaleInvoicePage: React.FC = () => {
     const [sale, setSale] = useState<Sale | null>(null);
     const [customer, setCustomer] = useState<Customer | undefined>(undefined);
     const [allProducts, setAllProducts] = useState<Product[]>([]);
-     const [companyInfo, setCompanyInfo] = useState<CompanyInfo>({
+    const [payments, setPayments] = useState<SalePayment[]>([]);
+    const [warehouse, setWarehouse] = useState<Warehouse | undefined>(undefined);
+    const [companyInfo, setCompanyInfo] = useState<CompanyInfo>({
         name: 'ETS COULIBALY & FRERES',
         address: 'Korhogo, Abidjan , lagune, BP 287, Côte d\'ivoire',
         phone: '05 05 18 22 16 / 07 08 34 13 22',
@@ -153,13 +197,22 @@ const SaleInvoicePage: React.FC = () => {
                 const saleData = { id: saleSnap.id, ...saleSnap.data() } as Sale;
                 setSale(saleData);
 
-                const [customersSnap, productsSnap, settingsSnap] = await Promise.all([
-                    getDocs(collection(db, 'customers')),
-                    getDocs(collection(db, 'products')),
-                    getDoc(doc(db, 'settings', 'app-config'))
+                // Optimisation: Fetch ONLY related data
+                const customerPromise = saleData.customerId 
+                    ? getDoc(doc(db, 'customers', saleData.customerId))
+                    : Promise.resolve(null);
+
+                const productPromises = saleData.items.map(item => getDoc(doc(db, 'products', item.productId)));
+
+                const [customerSnap, productsSnaps, settingsSnap, paymentsSnap, warehouseSnap] = await Promise.all([
+                    customerPromise,
+                    Promise.all(productPromises),
+                    getDoc(doc(db, 'settings', 'app-config')),
+                    getDocs(query(collection(db, 'salePayments'), where('saleId', '==', id))),
+                    saleData.warehouseId ? getDoc(doc(db, 'warehouses', saleData.warehouseId)) : Promise.resolve(null)
                 ]);
 
-                 if (settingsSnap.exists()) {
+                if (settingsSnap.exists()) {
                     const settingsData = settingsSnap.data() as AppSettings;
                     setCompanyInfo({
                         name: settingsData.companyName || 'ETS COULIBALY & FRERES',
@@ -174,10 +227,22 @@ const SaleInvoicePage: React.FC = () => {
                     });
                 }
 
-                const customersList = customersSnap.docs.map(d => ({ id: d.id, ...d.data() } as Customer));
-                setCustomer(customersList.find(c => c.id === saleData.customerId));
+                if (customerSnap && customerSnap.exists()) {
+                    setCustomer({ id: customerSnap.id, ...customerSnap.data() } as Customer);
+                }
 
-                setAllProducts(productsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Product)));
+                const productsList = productsSnaps
+                    .filter(p => p.exists())
+                    .map(d => ({ id: d.id, ...d.data() } as Product));
+                setAllProducts(productsList);
+
+                const paymentsList = paymentsSnap.docs.map(d => ({ id: d.id, ...d.data() } as SalePayment));
+                paymentsList.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+                setPayments(paymentsList);
+
+                if (warehouseSnap && warehouseSnap.exists()) {
+                    setWarehouse({ id: warehouseSnap.id, ...warehouseSnap.data() } as Warehouse);
+                }
 
             } catch (err) {
                 console.error("Error fetching invoice data:", err);
@@ -306,6 +371,8 @@ const SaleInvoicePage: React.FC = () => {
                     customer={customer}
                     products={allProducts}
                     companyInfo={companyInfo}
+                    payments={payments}
+                    warehouse={warehouse}
                 />
             </main>
         </div>

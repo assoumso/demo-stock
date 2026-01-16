@@ -1,17 +1,20 @@
-import React, { useState, useEffect, useMemo, FormEvent } from 'react';
+import React, { useState, useEffect, useMemo, FormEvent, useRef } from 'react';
 import { db } from '../firebase';
-import { collection, getDocs, doc, runTransaction, DocumentData, query, orderBy } from 'firebase/firestore';
-import { WarehouseTransfer, Product, Warehouse, WarehouseTransferItem } from '../types';
+import { collection, getDocs, doc, runTransaction, DocumentData, query, orderBy, limit, getDoc } from 'firebase/firestore';
+import { WarehouseTransfer, Product, Warehouse, WarehouseTransferItem, AppSettings } from '../types';
 import { Pagination } from '../components/Pagination';
 import Modal from '../components/Modal';
 import { useAuth } from '../hooks/useAuth';
-import { DeleteIcon, PlusIcon, EyeIcon, EditIcon } from '../constants';
+import { DeleteIcon, PlusIcon, EyeIcon, EditIcon, PrintIcon } from '../constants';
+import { useReactToPrint } from 'react-to-print';
+import { TransferNote } from '../components/TransferNote';
 
 const TransfersPage: React.FC = () => {
     const { hasPermission } = useAuth();
     const [transfers, setTransfers] = useState<WarehouseTransfer[]>([]);
     const [products, setProducts] = useState<Product[]>([]);
     const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+    const [settings, setSettings] = useState<AppSettings | null>(null);
     const [loading, setLoading] = useState(true);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -20,6 +23,7 @@ const TransfersPage: React.FC = () => {
     const [formState, setFormState] = useState({
         fromWarehouseId: '',
         toWarehouseId: '',
+        driverName: '',
     });
     
     // State for the list of items to transfer
@@ -50,12 +54,28 @@ const TransfersPage: React.FC = () => {
     // State for viewing transfer details
     const [selectedTransfer, setSelectedTransfer] = useState<WarehouseTransfer | null>(null);
     const [showDetailModal, setShowDetailModal] = useState(false);
+    const [limitCount, setLimitCount] = useState(50);
+
+    // Printing
+    const [transferToPrint, setTransferToPrint] = useState<WarehouseTransfer | null>(null);
+    const printRef = useRef<HTMLDivElement>(null);
+    const handlePrintProcess = useReactToPrint({
+        contentRef: printRef,
+        documentTitle: `Transfert_${transferToPrint?.id || ''}`
+    });
+
+    const onPrintClick = (transfer: WarehouseTransfer) => {
+        setTransferToPrint(transfer);
+        setTimeout(() => {
+            handlePrintProcess();
+        }, 100);
+    };
 
     const fetchData = async () => {
         setLoading(true);
         setError(null);
         try {
-            const transfersQuery = query(collection(db, "warehouseTransfers"), orderBy("date", "desc"));
+            const transfersQuery = query(collection(db, "warehouseTransfers"), orderBy("date", "desc"), limit(limitCount));
             const [transfersSnap, productsSnap, warehousesSnap] = await Promise.all([
                 getDocs(transfersQuery),
                 getDocs(collection(db, "products")),
@@ -74,7 +94,7 @@ const TransfersPage: React.FC = () => {
 
     useEffect(() => {
         fetchData();
-    }, []);
+    }, [limitCount]);
 
     useEffect(() => {
         setCurrentPage(1);
@@ -242,7 +262,8 @@ const TransfersPage: React.FC = () => {
                     fromWarehouseId,
                     toWarehouseId,
                     items: transferItems,
-                    status: 'Complété'
+                    status: 'Complété',
+                    driverName: formState.driverName
                 };
                 
                 const transferRef = doc(collection(db, "warehouseTransfers"));
@@ -250,7 +271,7 @@ const TransfersPage: React.FC = () => {
             });
             
             await fetchData();
-            setFormState({ fromWarehouseId: '', toWarehouseId: '' });
+            setFormState({ fromWarehouseId: '', toWarehouseId: '', driverName: '' });
             setTransferItems([]);
             setCurrentItem({ productId: '', quantity: 1 });
             setProductSearch('');
@@ -440,27 +461,40 @@ const TransfersPage: React.FC = () => {
                     <form onSubmit={handleSubmit} className="space-y-4">
                         {error && <div className="p-3 my-2 text-sm text-red-700 bg-red-100 rounded-md">{error}</div>}
                         
-                        <div>
-                            <label className="block text-sm">De (Entrepôt)</label>
-                            <select 
-                                name="fromWarehouseId" 
-                                value={formState.fromWarehouseId} 
-                                onChange={handleFormChange} 
-                                required 
-                                disabled={transferItems.length > 0}
-                                className={`w-full mt-1 border rounded p-2 dark:bg-gray-700 ${transferItems.length > 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
-                            >
-                                <option value="">-- Sélectionner --</option>
-                                {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
-                            </select>
-                            {transferItems.length > 0 && <p className="text-xs text-gray-500 mt-1">Videz la liste pour changer l'entrepôt de départ.</p>}
-                        </div>
-                        <div>
-                            <label className="block text-sm">À (Entrepôt)</label>
-                            <select name="toWarehouseId" value={formState.toWarehouseId} onChange={handleFormChange} required className="w-full mt-1 border rounded p-2 dark:bg-gray-700">
-                                <option value="">-- Sélectionner --</option>
-                                {warehouses.filter(w => w.id !== formState.fromWarehouseId).map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
-                            </select>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label className="block text-sm">De (Entrepôt)</label>
+                                <select 
+                                    name="fromWarehouseId" 
+                                    value={formState.fromWarehouseId} 
+                                    onChange={handleFormChange} 
+                                    required 
+                                    disabled={transferItems.length > 0}
+                                    className={`w-full mt-1 border rounded p-2 dark:bg-gray-700 ${transferItems.length > 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                >
+                                    <option value="">-- Sélectionner --</option>
+                                    {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                                </select>
+                                {transferItems.length > 0 && <p className="text-xs text-gray-500 mt-1">Videz la liste pour changer l'entrepôt de départ.</p>}
+                            </div>
+                            <div>
+                                <label className="block text-sm">À (Entrepôt)</label>
+                                <select name="toWarehouseId" value={formState.toWarehouseId} onChange={handleFormChange} required className="w-full mt-1 border rounded p-2 dark:bg-gray-700">
+                                    <option value="">-- Sélectionner --</option>
+                                    {warehouses.filter(w => w.id !== formState.fromWarehouseId).map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                                </select>
+                            </div>
+                            <div className="md:col-span-2">
+                                <label className="block text-sm">Nom du chauffeur</label>
+                                <input 
+                                    type="text" 
+                                    name="driverName" 
+                                    value={formState.driverName} 
+                                    onChange={handleFormChange} 
+                                    placeholder="Nom du chauffeur (optionnel)" 
+                                    className="w-full mt-1 border rounded p-2 dark:bg-gray-700"
+                                />
+                            </div>
                         </div>
 
                         <div className="border-t border-b py-4 my-4">
@@ -561,13 +595,21 @@ const TransfersPage: React.FC = () => {
             </div>
             <div className="lg:col-span-2">
                  <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-xl font-bold">Historique des transferts</h2>
-                    <button 
-                        onClick={() => setShowAll(!showAll)} 
-                        className="px-3 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 font-bold uppercase text-xs transition-colors"
-                    >
-                        {showAll ? 'Vue par page' : 'Tout afficher'}
-                    </button>
+                    <div>
+                        <h2 className="text-xl font-bold">Historique des transferts</h2>
+                        <p className="text-xs text-gray-500 mt-1">Affichage des {limitCount} derniers transferts</p>
+                    </div>
+                    <div className="flex space-x-2">
+                        <button onClick={() => setLimitCount(prev => prev + 500)} className="px-3 py-2 bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 font-bold uppercase text-xs transition-colors">
+                            Charger +
+                        </button>
+                        <button 
+                            onClick={() => setShowAll(!showAll)} 
+                            className="px-3 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 font-bold uppercase text-xs transition-colors"
+                        >
+                            {showAll ? 'Vue par page' : 'Tout afficher'}
+                        </button>
+                    </div>
                  </div>
 
                 <div className="mb-4 bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md">
@@ -601,6 +643,7 @@ const TransfersPage: React.FC = () => {
                                     <th className="px-6 py-3 text-left text-xs font-bold text-white uppercase">Produits</th>
                                     <th className="px-6 py-3 text-left text-xs font-bold text-white uppercase">De</th>
                                     <th className="px-6 py-3 text-left text-xs font-bold text-white uppercase">À</th>
+                                    <th className="px-6 py-3 text-left text-xs font-bold text-white uppercase">Chauffeur</th>
                                     <th className="px-6 py-3 text-right text-xs font-bold text-white uppercase">Actions</th>
                                 </tr>
                             </thead>
@@ -632,6 +675,9 @@ const TransfersPage: React.FC = () => {
                                                 {getWarehouseName(t.toWarehouseId)}
                                             </span>
                                         </td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
+                                            {t.driverName || '-'}
+                                        </td>
                                         <td className="px-6 py-4 text-right">
                                             <div className="flex items-center justify-end space-x-2">
                                                 <button 
@@ -640,6 +686,13 @@ const TransfersPage: React.FC = () => {
                                                     title="Voir les détails"
                                                 >
                                                     <EyeIcon className="w-5 h-5" />
+                                                </button>
+                                                <button 
+                                                    onClick={() => onPrintClick(t)}
+                                                    className="text-gray-700 hover:text-gray-900 bg-gray-100 p-2 rounded-lg transition-colors"
+                                                    title="Imprimer Bon de Transfert"
+                                                >
+                                                    <PrintIcon className="w-5 h-5" />
                                                 </button>
                                                 {hasPermission('transfers') && (
                                                     <>
@@ -671,6 +724,20 @@ const TransfersPage: React.FC = () => {
                  )}
             </div>
             
+            {/* Hidden Print Component */}
+            <div className="hidden">
+                {transferToPrint && (
+                    <TransferNote 
+                        ref={printRef}
+                        transfer={transferToPrint}
+                        fromWarehouseName={getWarehouseName(transferToPrint.fromWarehouseId)}
+                        toWarehouseName={getWarehouseName(transferToPrint.toWarehouseId)}
+                        products={products}
+                        settings={settings}
+                    />
+                )}
+            </div>
+
             {/* Transfer Details Modal */}
             <Modal isOpen={showDetailModal} onClose={() => setShowDetailModal(false)} title="DÉTAILS DU TRANSFERT">
                 {selectedTransfer && (

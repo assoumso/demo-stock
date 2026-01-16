@@ -2,7 +2,7 @@
 import React from 'react';
 import {
     DashboardIcon, PosIcon, ProductsIcon, InventoryIcon, OrdersIcon, CustomersIcon, ReportsIcon,
-    UsersIcon, RolesIcon, SettingsIcon, WarehouseIcon, TransferIcon, SuppliersIcon, BrandIcon, CategoryIcon, UnitIcon, PurchaseIcon, PaymentIcon
+    UsersIcon, RolesIcon, SettingsIcon, WarehouseIcon, TransferIcon, SuppliersIcon, BrandIcon, CategoryIcon, UnitIcon, PurchaseIcon, PaymentIcon, DocumentTextIcon, BankIcon
 } from '../constants';
 
 interface MenuItem {
@@ -36,6 +36,8 @@ export const menuConfig: MenuGroup[] = [
       { to: 'purchases', icon: React.createElement(PurchaseIcon), text: 'Achats' },
       { to: 'transfers', icon: React.createElement(TransferIcon), text: 'Transferts' },
       { to: 'payments', icon: React.createElement(PaymentIcon), text: 'Règlements' },
+      { to: 'bank', icon: React.createElement(BankIcon), text: 'Banque' },
+      { to: 'credit-notes', icon: React.createElement(DocumentTextIcon), text: 'Notes de Crédit' },
     ],
   },
   {

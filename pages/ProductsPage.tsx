@@ -13,7 +13,7 @@ import DropdownMenu, { DropdownMenuItem } from '../components/DropdownMenu';
 
 const ProductsPage: React.FC = () => {
     const { hasPermission } = useAuth();
-    const { categories, brands, units, warehouses } = useData(); // Données instantanées
+    const { categories, brands, units, warehouses, suppliers } = useData(); // Données instantanées
     const navigate = useNavigate();
 
     const [products, setProducts] = useState<Product[]>([]);
@@ -129,6 +129,10 @@ const ProductsPage: React.FC = () => {
                     <select value={selectedBrand} onChange={(e) => setSelectedBrand(e.target.value)} className="px-3 py-2 border rounded-xl dark:bg-gray-700 dark:border-gray-600 font-bold">
                         <option value="all">Toutes marques</option>
                         {brands.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                    </select>
+                    <select value={selectedSupplier} onChange={(e) => setSelectedSupplier(e.target.value)} className="px-3 py-2 border rounded-xl dark:bg-gray-700 dark:border-gray-600 font-bold">
+                        <option value="all">Tous fournisseurs</option>
+                        {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                     </select>
                     <select value={selectedWarehouse} onChange={(e) => setSelectedWarehouse(e.target.value)} className="px-3 py-2 border rounded-xl dark:bg-gray-700 dark:border-gray-600 font-bold">
                         <option value="all">Stock Global</option>

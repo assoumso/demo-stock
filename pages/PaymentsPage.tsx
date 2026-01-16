@@ -4,7 +4,7 @@ import { db } from '../firebase';
 import { collection, getDocs, query, where, doc, runTransaction, DocumentData } from 'firebase/firestore';
 import { Customer, Supplier, Sale, Purchase, SalePayment, Payment, PaymentMethod, PaymentStatus, AppSettings } from '../types';
 import { useAuth } from '../hooks/useAuth';
-import { SearchIcon, CustomersIcon, SuppliersIcon, WarningIcon, CheckIcon, EditIcon, DeleteIcon } from '../constants';
+import { SearchIcon, CustomersIcon, SuppliersIcon, WarningIcon, CheckIcon, EditIcon, DeleteIcon, PrintIcon } from '../constants';
 import Modal from '../components/Modal';
 import { Pagination } from '../components/Pagination';
 import { PaymentReceipt } from '../components/PaymentReceipt';
@@ -251,6 +251,7 @@ const PaymentsPage: React.FC = () => {
                 
                 let refNum = '...';
                 let pName = selectedPartner?.name || '...';
+                let pId = selectedPartner?.id || '';
                 
                 if (!selectedPartner) {
                     // We need to fetch the invoice to get partner ID then partner name
@@ -264,6 +265,7 @@ const PaymentsPage: React.FC = () => {
                              if (!selectedPartner) {
                                  const partnerList = activeTab === 'clients' ? customers : suppliers;
                                  const partnerId = activeTab === 'clients' ? data.customerId : data.supplierId;
+                                 pId = partnerId;
                                  pName = partnerList.find(x => x.id === partnerId)?.name || 'Inconnu';
                              }
                          }
@@ -271,16 +273,22 @@ const PaymentsPage: React.FC = () => {
                 } else {
                      // We can try to find ref in unpaidInvoices, otherwise fetch
                      const inv = unpaidInvoices.find(i => i.id === invId);
-                     if (inv) refNum = inv.referenceNumber;
+                     if (inv) {
+                        refNum = inv.referenceNumber;
+                        pId = selectedPartner.id;
+                     }
                      else {
                          try {
                              const d = await import('firebase/firestore').then(mod => mod.getDoc(invRef));
-                             if (d.exists()) refNum = d.data()?.referenceNumber;
+                             if (d.exists()) {
+                                 refNum = d.data()?.referenceNumber;
+                                 pId = selectedPartner.id;
+                             }
                          } catch (e) {}
                      }
                 }
                 
-                return { ...p, invoiceRef: refNum, partnerName: pName };
+                return { ...p, invoiceRef: refNum, partnerName: pName, partnerId: pId };
             }));
             
             setPaymentHistory(enhancedPayments);
@@ -312,6 +320,10 @@ const PaymentsPage: React.FC = () => {
     }, [filteredHistory, historyPage]);
     
     const totalHistoryPages = Math.ceil(filteredHistory.length / HISTORY_ITEMS_PER_PAGE);
+
+    // Calcul des totaux
+    const totalGlobalAmount = useMemo(() => filteredHistory.reduce((sum, p) => sum + (p.amount || 0), 0), [filteredHistory]);
+    const totalPageAmount = useMemo(() => paginatedHistory.reduce((sum, p) => sum + (p.amount || 0), 0), [paginatedHistory]);
 
     const handleDeletePayment = async (paymentId: string, invoiceId: string, amount: number) => {
         if (!window.confirm("Êtes-vous sûr de vouloir supprimer ce paiement ? Cela mettra à jour le solde de la facture.")) return;
@@ -358,6 +370,50 @@ const PaymentsPage: React.FC = () => {
             console.error(e);
             setError("Erreur lors de la suppression: " + e.message);
         }
+    };
+
+    const handleHistoryReprint = (payment: any) => {
+        // We need customer object
+        if (activeTab !== 'clients') {
+            alert("L'impression des reçus n'est disponible que pour les clients.");
+            return;
+        }
+
+        // Try to find customer in the already loaded list first
+        let cust = customers.find(c => c.id === payment.partnerId);
+        
+        // If not found (maybe payment loaded without full partner link or pagination issue), try to find by name match as fallback or fetch
+        if (!cust && payment.partnerName) {
+             cust = customers.find(c => c.name === payment.partnerName);
+        }
+
+        if (!cust) {
+            // Last resort: if we have partnerId but it wasn't in the initial list (unlikely if we load all customers, but possible if large list)
+            // Or if partnerId is missing from the payment object in history.
+            // Let's check if we can fetch it.
+            if (payment.partnerId) {
+                 // Async fetch not ideal here without refactoring this handler to async.
+                 // Let's assume if it's not in the list, it might be a data consistency issue or 'Inconnu'.
+                 alert(`Client introuvable (ID: ${payment.partnerId}).`);
+            } else {
+                 alert("Client introuvable pour ce paiement (ID manquant).");
+            }
+            return;
+        }
+
+        setLastPayment({
+            id: payment.id,
+            saleId: payment.saleId,
+            date: payment.date,
+            amount: payment.amount,
+            method: payment.method,
+            createdByUserId: payment.createdByUserId,
+            notes: payment.notes || payment.invoiceRef || ''
+        } as SalePayment);
+
+        setReceiptCustomer(cust);
+        setLastPaymentBalance(0); 
+        setShowReceiptModal(true);
     };
 
     const handleEditClick = (payment: any) => {
@@ -946,6 +1002,15 @@ const PaymentsPage: React.FC = () => {
                                                 </span>
                                             </td>
                                             <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
+                                                {activeTab === 'clients' && (
+                                                    <button 
+                                                        onClick={() => handleHistoryReprint(payment)}
+                                                        className="text-gray-500 hover:text-gray-900 p-1 bg-gray-100 rounded-lg transition-colors"
+                                                        title="Imprimer Reçu"
+                                                    >
+                                                        <PrintIcon className="w-4 h-4" />
+                                                    </button>
+                                                )}
                                                 <button 
                                                     onClick={() => handleEditClick(payment)}
                                                     className="text-blue-600 hover:text-blue-900 p-1 bg-blue-50 rounded-lg transition-colors"
@@ -965,6 +1030,18 @@ const PaymentsPage: React.FC = () => {
                                     ))
                                 )}
                             </tbody>
+                            <tfoot className="border-t-2 border-gray-200 dark:border-gray-700">
+                                <tr className="bg-blue-50 dark:bg-blue-900/20 border-b dark:border-gray-700">
+                                    <td colSpan={3} className="px-6 py-3 text-right text-xs font-black uppercase text-gray-500">Total Page</td>
+                                    <td className="px-6 py-3 text-sm font-black text-primary-600">{formatCurrency(totalPageAmount)}</td>
+                                    <td colSpan={2}></td>
+                                </tr>
+                                <tr className="bg-blue-100 dark:bg-blue-900/40">
+                                    <td colSpan={3} className="px-6 py-3 text-right text-xs font-black uppercase text-primary-600">Total Global</td>
+                                    <td className="px-6 py-3 text-sm font-black text-primary-600">{formatCurrency(totalGlobalAmount)}</td>
+                                    <td colSpan={2}></td>
+                                </tr>
+                            </tfoot>
                         </table>
                     </div>
                     

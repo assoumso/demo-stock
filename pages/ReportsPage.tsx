@@ -487,6 +487,12 @@ const ReportsPage: React.FC = () => {
                                                 <td className="px-6 py-4 text-right">{formatCurrency(s.grandTotal)}</td>
                                             </tr>)}
                                         </tbody>
+                                        <tfoot className="border-t-2 border-gray-200 dark:border-gray-700">
+                                            <tr className="bg-blue-50 dark:bg-blue-900/20">
+                                                <td colSpan={3} className="px-6 py-3 text-right text-xs font-black uppercase text-gray-500">Total</td>
+                                                <td className="px-6 py-3 text-right font-black text-primary-600">{formatCurrency(salesReportData.totalRevenue)}</td>
+                                            </tr>
+                                        </tfoot>
                                     </table>
                                 </div>
                             </div>

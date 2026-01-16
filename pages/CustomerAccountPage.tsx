@@ -23,7 +23,7 @@ interface AccountMovement {
 
 const formatCurrency = (v: number) => new Intl.NumberFormat('fr-FR').format(v).replace(/\u202f/g, ' ') + ' FCFA';
 
-const CustomerAccountPage: React.FC = () => {
+    const CustomerAccountPage: React.FC = () => {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
     const { user } = useAuth();
@@ -37,6 +37,10 @@ const CustomerAccountPage: React.FC = () => {
     const [summary, setSummary] = useState({ totalDue: 0, totalPaid: 0, balance: 0 });
     const [unpaidSales, setUnpaidSales] = useState<Sale[]>([]);
     const [openingBalanceRemaining, setOpeningBalanceRemaining] = useState(0);
+
+    // Calcul des totaux pour le tableau
+    const totalDebit = React.useMemo(() => movements.reduce((sum, m) => sum + m.debit, 0), [movements]);
+    const totalCredit = React.useMemo(() => movements.reduce((sum, m) => sum + m.credit, 0), [movements]);
 
     // Modal Payment
     const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
@@ -59,6 +63,17 @@ const CustomerAccountPage: React.FC = () => {
     const [paymentToDelete, setPaymentToDelete] = useState<{id: string, saleId: string, amount: number} | null>(null);
     const [deleteReason, setDeleteReason] = useState('');
     const [isDeleting, setIsDeleting] = useState(false);
+
+    // Reprint State
+    const [paymentToReprint, setPaymentToReprint] = useState<SalePayment | null>(null);
+    const reprintRef = useRef<HTMLDivElement>(null);
+    const handleReprint = useReactToPrint({ contentRef: reprintRef, onAfterPrint: () => setPaymentToReprint(null) });
+
+    useEffect(() => {
+        if (paymentToReprint) {
+            handleReprint();
+        }
+    }, [paymentToReprint]);
 
     const fetchSettings = async () => {
         try {
@@ -165,7 +180,7 @@ const CustomerAccountPage: React.FC = () => {
                     combined.push({
                         date: p.date,
                         ref: `AVOIR-${p.id.slice(-4).toUpperCase()}`,
-                        description: `Dépôt / Avoir (Crédit généré)`,
+                        description: p.notes || `Dépôt / Avoir (Crédit généré)`,
                         debit: 0,
                         credit: p.amount,
                         balance: 0,
@@ -628,19 +643,57 @@ const CustomerAccountPage: React.FC = () => {
                                     <td className="px-4 py-4 text-xs text-right font-bold text-green-600">{m.credit > 0 ? formatCurrency(m.credit) : '-'}</td>
                                     <td className={`px-4 py-4 text-xs text-right font-black bg-gray-50/50 dark:bg-gray-900/20 ${m.balance > 0 ? 'text-red-600' : 'text-blue-600'}`}>{formatCurrency(m.balance)}</td>
                                     <td className="px-4 py-4 text-right no-print">
-                                        {m.type === 'payment' && m.paymentId && m.saleId && (
-                                            <button 
-                                                onClick={() => initiateDeletePayment(m.paymentId!, m.saleId!, m.credit)}
-                                                className="p-3 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all active:scale-95"
-                                                title="Supprimer ce paiement"
-                                            >
-                                                <DeleteIcon className="w-5 h-5" />
-                                            </button>
+                                        {m.type === 'payment' && (
+                                            <div className="flex justify-end gap-1">
+                                                {m.paymentId && (
+                                                    <button 
+                                                        onClick={() => {
+                                                            const doReprint = async () => {
+                                                                try {
+                                                                    const pDoc = await getDoc(doc(db, 'salePayments', m.paymentId!));
+                                                                    if (pDoc.exists()) {
+                                                                        setPaymentToReprint({ id: pDoc.id, ...pDoc.data() } as SalePayment);
+                                                                    } else {
+                                                                        // Fallback if paymentId is not valid but we have data in m (less likely to happen for reprint full receipt)
+                                                                        alert("Impossible de retrouver les détails complets du paiement.");
+                                                                    }
+                                                                } catch (e) {
+                                                                    console.error("Error fetching payment for reprint", e);
+                                                                    alert("Erreur lors de la récupération du paiement.");
+                                                                }
+                                                            };
+                                                            doReprint();
+                                                        }}
+                                                        className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all active:scale-95"
+                                                        title="Réimprimer le reçu"
+                                                    >
+                                                        <PrintIcon className="w-5 h-5" />
+                                                    </button>
+                                                )}
+                                                {m.paymentId && m.saleId && (
+                                                    <button 
+                                                        onClick={() => initiateDeletePayment(m.paymentId!, m.saleId!, m.credit)}
+                                                        className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all active:scale-95"
+                                                        title="Supprimer ce paiement"
+                                                    >
+                                                        <DeleteIcon className="w-5 h-5" />
+                                                    </button>
+                                                )}
+                                            </div>
                                         )}
                                     </td>
                                 </tr>
                             ))}
                         </tbody>
+                        <tfoot className="border-t-2 border-gray-300 dark:border-gray-600">
+                            <tr className="bg-blue-50 dark:bg-blue-900/20">
+                                <td colSpan={3} className="px-4 py-4 text-right text-xs font-black uppercase text-gray-600 dark:text-gray-400 tracking-widest">Totaux</td>
+                                <td className="px-4 py-4 text-right text-xs font-black text-gray-900 dark:text-white">{formatCurrency(totalDebit)}</td>
+                                <td className="px-4 py-4 text-right text-xs font-black text-green-600">{formatCurrency(totalCredit)}</td>
+                                <td className="px-4 py-4 text-right text-xs font-black text-primary-600">{formatCurrency(summary.balance)}</td>
+                                <td></td>
+                            </tr>
+                        </tfoot>
                     </table>
                 </div>
             </div>
@@ -850,6 +903,20 @@ const CustomerAccountPage: React.FC = () => {
                     </div>
                 </div>
             </Modal>
+
+            {/* Hidden Reprint Component */}
+            <div className="hidden">
+                {paymentToReprint && customer && (
+                    <PaymentReceipt 
+                        ref={reprintRef}
+                        payment={paymentToReprint}
+                        customer={customer}
+                        settings={settings}
+                        balanceAfter={movements.find(m => m.paymentId === paymentToReprint.id)?.balance || 0}
+                        reference={movements.find(m => m.paymentId === paymentToReprint.id)?.ref || paymentToReprint.saleId}
+                    />
+                )}
+            </div>
         </div>
     );
 };

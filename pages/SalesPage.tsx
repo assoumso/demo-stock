@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { db, storage } from '../firebase';
-import { collection, doc, query, orderBy, where, runTransaction, onSnapshot, DocumentReference } from 'firebase/firestore';
+import { collection, doc, query, orderBy, where, runTransaction, onSnapshot, limit, DocumentReference } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { Sale, SalePayment, PaymentMethod, PaymentStatus } from '../types';
 import { useAuth } from '../hooks/useAuth';
@@ -43,10 +43,11 @@ const SalesPage: React.FC = () => {
     const [payments, setPayments] = useState<SalePayment[]>([]);
     const [newPayment, setNewPayment] = useState({ amount: 0, method: 'Espèces' as PaymentMethod, momoOperator: '', momoNumber: '', date: new Date().toISOString().split('T')[0], attachmentFile: null as File | null });
     const [isSubmittingPayment, setIsSubmittingPayment] = useState(false);
+    const [limitCount, setLimitCount] = useState(50);
 
     useEffect(() => {
         // Chargement réactif uniquement des ventes
-        const q = query(collection(db, "sales"), orderBy("date", "desc"));
+        const q = query(collection(db, "sales"), orderBy("date", "desc"), limit(limitCount));
         const unsubscribe = onSnapshot(q, (snapshot) => {
             setSales(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Sale)));
             setLoading(false);
@@ -55,7 +56,7 @@ const SalesPage: React.FC = () => {
             setLoading(false);
         });
         return () => unsubscribe();
-    }, []);
+    }, [limitCount]);
 
     useEffect(() => { setCurrentPage(1); }, [filters]);
 
@@ -130,14 +131,24 @@ const SalesPage: React.FC = () => {
     const formatCurrency = (v: number) => new Intl.NumberFormat('fr-FR').format(v).replace(/\u202f/g, ' ') + ' FCFA';
     const getPaymentBadge = (s: Sale['paymentStatus']) => ({'Payé': 'bg-green-100 text-green-800','Partiel': 'bg-blue-100 text-blue-800','En attente': 'bg-yellow-100 text-yellow-800'}[s] || '');
 
+    // Calcul des totaux
+    const totalGlobalAmount = useMemo(() => filteredSales.reduce((sum, s) => sum + s.grandTotal, 0), [filteredSales]);
+    const totalGlobalBalance = useMemo(() => filteredSales.reduce((sum, s) => sum + (s.grandTotal - s.paidAmount), 0), [filteredSales]);
+    
+    const totalPageAmount = useMemo(() => paginatedSales.reduce((sum, s) => sum + s.grandTotal, 0), [paginatedSales]);
+    const totalPageBalance = useMemo(() => paginatedSales.reduce((sum, s) => sum + (s.grandTotal - s.paidAmount), 0), [paginatedSales]);
+
     return (
         <div className="pb-10">
             <div className="flex justify-between items-center mb-8">
                 <div>
                     <h1 className="text-3xl font-black text-gray-900 dark:text-white uppercase tracking-tight">Journal des Ventes</h1>
-                    <p className="text-gray-500 text-sm">Gestion des factures et encaissements.</p>
+                    <p className="text-gray-500 text-sm">Gestion des factures et encaissements. <span className="text-xs font-bold text-primary-600 bg-primary-50 px-2 py-0.5 rounded ml-2">Affichage des {limitCount} dernières ventes</span></p>
                 </div>
                 <div className="flex space-x-2">
+                    <button onClick={() => setLimitCount(prev => prev + 500)} className="px-4 py-3 bg-gray-100 text-gray-600 rounded-xl hover:bg-gray-200 font-bold uppercase text-xs transition-colors">
+                        Charger +
+                    </button>
                     <button onClick={() => setShowAll(!showAll)} className="px-4 py-3 bg-gray-200 text-gray-800 rounded-xl hover:bg-gray-300 font-bold uppercase text-xs transition-colors">
                         {showAll ? 'Vue par page' : 'Tout afficher'}
                     </button>
@@ -205,6 +216,20 @@ const SalesPage: React.FC = () => {
                                     </tr>
                                 ))}
                             </tbody>
+                            <tfoot className="border-t-2 border-gray-200 dark:border-gray-700">
+                                <tr className="bg-blue-50 dark:bg-blue-900/20 border-b dark:border-gray-700">
+                                    <td colSpan={3} className="px-6 py-3 text-right text-xs font-black uppercase text-gray-500">Total Page</td>
+                                    <td className="px-6 py-3 text-sm font-black text-gray-900 dark:text-white">{formatCurrency(totalPageAmount)}</td>
+                                    <td className="px-6 py-3 text-sm font-black text-red-600">{formatCurrency(totalPageBalance)}</td>
+                                    <td colSpan={2}></td>
+                                </tr>
+                                <tr className="bg-blue-100 dark:bg-blue-900/40">
+                                    <td colSpan={3} className="px-6 py-3 text-right text-xs font-black uppercase text-primary-600">Total Global</td>
+                                    <td className="px-6 py-3 text-sm font-black text-primary-600">{formatCurrency(totalGlobalAmount)}</td>
+                                    <td className="px-6 py-3 text-sm font-black text-red-600">{formatCurrency(totalGlobalBalance)}</td>
+                                    <td colSpan={2}></td>
+                                </tr>
+                            </tfoot>
                         </table>
                     </div>
                 </div>

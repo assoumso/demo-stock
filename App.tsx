@@ -36,6 +36,9 @@ const PurchasesPage = lazy(() => import('./pages/PurchasesPage'));
 const PurchaseFormPage = lazy(() => import('./pages/PurchaseFormPage'));
 const PurchaseInvoicePage = lazy(() => import('./pages/PurchaseInvoicePage'));
 const PaymentsPage = lazy(() => import('./pages/PaymentsPage'));
+const BankPage = lazy(() => import('./pages/BankPage'));
+const CreditNotesPage = lazy(() => import('./pages/CreditNotesPage'));
+const CreditNoteFormPage = lazy(() => import('./pages/CreditNoteFormPage'));
 
 const LoadingFallback = () => <div className="flex h-screen items-center justify-center bg-gray-100 dark:bg-gray-900 text-gray-400 font-black uppercase tracking-widest animate-pulse">Chargement...</div>;
 
@@ -62,6 +65,9 @@ const AppRoutes: React.FC = () => {
                 <Route path="purchases/edit/:id" element={<PurchaseFormPage />} />
                 <Route path="transfers" element={<TransfersPage />} />
                 <Route path="payments" element={<PaymentsPage />} />
+                <Route path="bank" element={<BankPage />} />
+                <Route path="credit-notes" element={<CreditNotesPage />} />
+                <Route path="credit-notes/new" element={<CreditNoteFormPage />} />
                 <Route path="customers" element={<CustomersPage />} />
                 <Route path="customers/new" element={<CustomerFormPage />} />
                 <Route path="customers/edit/:id" element={<CustomerFormPage />} />

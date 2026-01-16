@@ -125,6 +125,24 @@ const SupplierFormPage: React.FC = () => {
                 <section className="bg-white dark:bg-gray-800 p-8 rounded-3xl shadow-xl border border-gray-100 dark:border-gray-700">
                     <h2 className="text-lg font-black text-primary-600 uppercase mb-6 flex items-center">
                         <span className="w-8 h-8 bg-primary-100 rounded-lg flex items-center justify-center mr-3 text-sm">3</span>
+                        Solde d'Ouverture (Dette Initiale)
+                    </h2>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <label className={labelClasses}>Montant de la dette initiale</label>
+                            <input type="number" name="openingBalance" value={formState.openingBalance || ''} onChange={handleInputChange} className={inputClasses} placeholder="0" />
+                            <p className="text-xs text-gray-500 mt-1">Montant que vous devez à ce fournisseur avant l'utilisation du logiciel.</p>
+                        </div>
+                        <div>
+                            <label className={labelClasses}>Date du solde</label>
+                            <input type="date" name="openingBalanceDate" value={formState.openingBalanceDate || ''} onChange={handleInputChange} className={inputClasses} />
+                        </div>
+                    </div>
+                </section>
+
+                <section className="bg-white dark:bg-gray-800 p-8 rounded-3xl shadow-xl border border-gray-100 dark:border-gray-700">
+                    <h2 className="text-lg font-black text-primary-600 uppercase mb-6 flex items-center">
+                        <span className="w-8 h-8 bg-primary-100 rounded-lg flex items-center justify-center mr-3 text-sm">4</span>
                         Compléments
                     </h2>
                     <div><label className={labelClasses}>Observations / Notes</label><textarea name="notes" value={formState.notes} onChange={handleInputChange} rows={3} className={inputClasses} placeholder="Historique des échanges, conditions de paiement habituelles..."></textarea></div>

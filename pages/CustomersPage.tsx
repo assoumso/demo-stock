@@ -1,36 +1,52 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { db } from '../firebase';
 import { collection, getDocs, doc, deleteDoc, writeBatch } from 'firebase/firestore';
-import { Customer, Sale } from '../types';
-import { PlusIcon, EditIcon, DeleteIcon, WhatsappIcon, EyeIcon, WarningIcon, SearchIcon } from '../constants';
+import { Customer, Sale, AppSettings } from '../types';
+import { PlusIcon, EditIcon, DeleteIcon, WhatsappIcon, EyeIcon, WarningIcon, SearchIcon, PrintIcon } from '../constants';
 import DropdownMenu, { DropdownMenuItem } from '../components/DropdownMenu';
 import { useAuth } from '../hooks/useAuth';
 import Modal from '../components/Modal';
+import { useReactToPrint } from 'react-to-print';
+import { CustomerListPrint } from '../components/CustomerListPrint';
 
 const CustomersPage: React.FC = () => {
     const { hasPermission } = useAuth();
     const navigate = useNavigate();
     const [customers, setCustomers] = useState<Customer[]>([]);
     const [balances, setBalances] = useState<Record<string, number>>({});
+    const [settings, setSettings] = useState<AppSettings | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
     const [isBulkDeleteModalOpen, setIsBulkDeleteModalOpen] = useState(false);
+    
+    // Filters
     const [filterType, setFilterType] = useState<'all' | 'debt' | 'exceeded'>('all');
     const [searchTerm, setSearchTerm] = useState('');
+    const [selectedCity, setSelectedCity] = useState('all');
+
+    // Printing
+    const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
+    const printRef = useRef<HTMLDivElement>(null);
+    const handlePrint = useReactToPrint({ contentRef: printRef });
 
     const fetchData = async () => {
         setLoading(true);
         try {
-            const [custSnap, salesSnap, paymentsSnap] = await Promise.all([
+            const [custSnap, salesSnap, paymentsSnap, settingsSnap] = await Promise.all([
                 getDocs(collection(db, "customers")),
                 getDocs(collection(db, "sales")),
-                getDocs(collection(db, "salePayments"))
+                getDocs(collection(db, "salePayments")),
+                getDocs(collection(db, "appSettings"))
             ]);
             
+            if (!settingsSnap.empty) {
+                setSettings({ id: settingsSnap.docs[0].id, ...settingsSnap.docs[0].data() } as AppSettings);
+            }
+
             const customersData = custSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Customer));
             const salesData = salesSnap.docs.map(doc => doc.data() as Sale);
             const paymentsData = paymentsSnap.docs.map(doc => doc.data());
@@ -76,15 +92,26 @@ const CustomersPage: React.FC = () => {
     
     useEffect(() => { fetchData(); }, []);
 
+    const cities = useMemo(() => {
+        const uniqueCities = new Set(customers.map(c => c.city).filter(Boolean));
+        // Cast to string array to avoid TS issues if city is optional
+        return Array.from(uniqueCities as Set<string>).sort();
+    }, [customers]);
+
     const filteredCustomers = useMemo(() => {
         return customers.filter(c => {
             const balance = balances[c.id] || 0;
-            const matchesSearch = c.name.toLowerCase().includes(searchTerm.toLowerCase()) || (c.businessName?.toLowerCase().includes(searchTerm.toLowerCase()));
+            const term = searchTerm.toLowerCase();
+            const matchesSearch = c.name.toLowerCase().includes(term) || (c.businessName && c.businessName.toLowerCase().includes(term));
+            const matchesCity = selectedCity === 'all' || c.city === selectedCity;
+
+            if (!matchesCity) return false;
+
             if (filterType === 'debt') return matchesSearch && balance > 0.01;
             if (filterType === 'exceeded') return matchesSearch && c.isCreditLimited && c.creditLimit && balance > c.creditLimit;
             return matchesSearch;
         });
-    }, [customers, balances, filterType, searchTerm]);
+    }, [customers, balances, filterType, searchTerm, selectedCity]);
 
     const handleDelete = async (id: string) => {
         if (window.confirm("Supprimer ce client ?")) {
@@ -124,17 +151,24 @@ const CustomersPage: React.FC = () => {
                 )}
             </div>
 
-            <div className="bg-white dark:bg-gray-800 p-4 rounded-3xl shadow-xl border border-gray-100 dark:border-gray-700 mb-8 space-y-4">
-                <div className="flex flex-col lg:flex-row gap-4 justify-between">
-                    <div className="relative flex-1">
-                        <input type="text" placeholder="Rechercher un client ou une entreprise..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-3 bg-gray-50 dark:bg-gray-900/50 rounded-2xl border-none focus:ring-2 focus:ring-primary-500 font-medium" />
-                        <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"><SearchIcon className="w-5 h-5"/></div>
+            <div className="mb-6 bg-white dark:bg-gray-800 p-4 rounded-3xl shadow-xl border border-gray-100 dark:border-gray-700">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div className="relative">
+                        <input type="text" placeholder="Nom, entreprise..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2 bg-gray-50 dark:bg-gray-900 rounded-xl border-none focus:ring-2 focus:ring-primary-500 font-medium" />
+                        <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"><SearchIcon className="w-4 h-4"/></div>
                     </div>
-                    <div className="flex bg-gray-100 dark:bg-gray-900 p-1 rounded-2xl self-start">
-                        <button onClick={() => setFilterType('all')} className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${filterType === 'all' ? 'bg-white dark:bg-gray-800 shadow-md text-primary-600' : 'text-gray-500'}`}>Tous</button>
-                        <button onClick={() => setFilterType('debt')} className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${filterType === 'debt' ? 'bg-white dark:bg-gray-800 shadow-md text-orange-600' : 'text-gray-500'}`}>Endettés</button>
-                        <button onClick={() => setFilterType('exceeded')} className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${filterType === 'exceeded' ? 'bg-white dark:bg-gray-800 shadow-md text-red-600' : 'text-gray-500'}`}>Risque Max</button>
-                    </div>
+                    <select value={selectedCity} onChange={(e) => setSelectedCity(e.target.value)} className="px-3 py-2 border rounded-xl dark:bg-gray-700 dark:border-gray-600 font-bold">
+                        <option value="all">Toutes les villes</option>
+                        {cities.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                    <select value={filterType} onChange={(e) => setFilterType(e.target.value as any)} className="px-3 py-2 border rounded-xl dark:bg-gray-700 dark:border-gray-600 font-bold">
+                        <option value="all">Tous les clients</option>
+                        <option value="debt">Clients Endettés</option>
+                        <option value="exceeded">Plafond Dépassé</option>
+                    </select>
+                    <button onClick={() => setIsPrintModalOpen(true)} className="px-4 py-2 bg-gray-900 text-white rounded-xl hover:bg-black font-bold uppercase text-xs shadow-lg flex items-center justify-center transition-all hover:scale-105">
+                        <PrintIcon className="w-4 h-4 mr-2" /> Imprimer
+                    </button>
                 </div>
             </div>
 
@@ -164,8 +198,8 @@ const CustomersPage: React.FC = () => {
                                             <input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => setSelectedIds(prev => prev.includes(item.id) ? prev.filter(p => p !== item.id) : [...prev, item.id])} className="h-4 w-4 text-primary-600 rounded"/>
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap">
-                                            <div className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-tighter">{item.name}</div>
-                                            {item.businessName && <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest">{item.businessName}</div>}
+                                            <div className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-tighter">{item.businessName || item.name}</div>
+                                            {item.businessName && <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest">{item.name}</div>}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-xs font-bold text-gray-500 dark:text-gray-400">
                                             {formatCurrency(item.openingBalance || 0)}
@@ -194,10 +228,48 @@ const CustomersPage: React.FC = () => {
                                 );
                             })}
                         </tbody>
+                        <tfoot className="border-t-2 border-gray-200 dark:border-gray-700">
+                            <tr className="bg-blue-100 dark:bg-blue-900/40">
+                                <td colSpan={4} className="px-6 py-4 text-right text-xs font-black uppercase text-primary-600 tracking-widest">Total Global Crédits (Créances)</td>
+                                <td className="px-6 py-4 text-right text-sm font-black text-orange-600">
+                                    {formatCurrency(Object.values(balances).reduce((a, b) => a + b, 0))}
+                                </td>
+                                <td></td>
+                            </tr>
+                        </tfoot>
                     </table>
                 </div>
             </div>
             )}
+
+            <Modal isOpen={isBulkDeleteModalOpen} onClose={() => setIsBulkDeleteModalOpen(false)} title="CONFIRMATION SUPPRESSION">
+                <div className="p-6">
+                    <p className="text-gray-600 dark:text-gray-300 mb-6 font-medium">Voulez-vous vraiment supprimer les {selectedIds.length} clients sélectionnés ? Cette action est irréversible.</p>
+                    <div className="flex justify-end gap-3">
+                        <button onClick={() => setIsBulkDeleteModalOpen(false)} className="px-4 py-2 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-700 font-bold text-gray-500">ANNULER</button>
+                        <button onClick={handleBulkDelete} className="px-4 py-2 bg-red-600 text-white rounded-xl hover:bg-red-700 font-bold shadow-lg">CONFIRMER SUPPRESSION</button>
+                    </div>
+                </div>
+            </Modal>
+
+             <Modal isOpen={isPrintModalOpen} onClose={() => setIsPrintModalOpen(false)} title="IMPRIMER LISTE CLIENTS" maxWidth="max-w-4xl">
+                <div className="flex flex-col items-center p-6">
+                    <div className="w-full overflow-auto bg-gray-100 dark:bg-gray-700 p-4 rounded-xl mb-6 shadow-inner max-h-[70vh]">
+                        <div className="transform scale-90 origin-top">
+                             <CustomerListPrint 
+                                ref={printRef}
+                                customers={filteredCustomers}
+                                balances={balances}
+                                settings={settings}
+                             />
+                        </div>
+                    </div>
+                    <div className="flex gap-4 w-full justify-end">
+                        <button onClick={() => setIsPrintModalOpen(false)} className="px-6 py-2 text-gray-600 hover:bg-gray-100 rounded-xl font-bold uppercase">Fermer</button>
+                        <button onClick={handlePrint} className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black uppercase shadow-lg flex items-center"><PrintIcon className="w-5 h-5 mr-2" /> Imprimer</button>
+                    </div>
+                </div>
+            </Modal>
         </div>
     );
 };
