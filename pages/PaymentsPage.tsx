@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { db } from '../firebase';
-import { collection, getDocs, query, where, doc, runTransaction, DocumentData } from 'firebase/firestore';
+import { collection, getDocs, query, where, doc, runTransaction, DocumentData, getDoc } from 'firebase/firestore';
 import { Customer, Supplier, Sale, Purchase, SalePayment, Payment, PaymentMethod, PaymentStatus, AppSettings } from '../types';
 import { useAuth } from '../hooks/useAuth';
 import { SearchIcon, CustomersIcon, SuppliersIcon, WarningIcon, CheckIcon, EditIcon, DeleteIcon, PrintIcon } from '../constants';
@@ -258,7 +258,7 @@ const PaymentsPage: React.FC = () => {
                     // This is heavy. Maybe just show Reference?
                     // Let's fetch invoice data.
                     try {
-                         const d = await import('firebase/firestore').then(mod => mod.getDoc(invRef));
+                         const d = await getDoc(invRef);
                          if (d.exists()) {
                              const data = d.data() as any;
                              refNum = data.referenceNumber;
@@ -279,7 +279,7 @@ const PaymentsPage: React.FC = () => {
                      }
                      else {
                          try {
-                             const d = await import('firebase/firestore').then(mod => mod.getDoc(invRef));
+                             const d = await getDoc(invRef);
                              if (d.exists()) {
                                  refNum = d.data()?.referenceNumber;
                                  pId = selectedPartner.id;

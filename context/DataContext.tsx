@@ -2,7 +2,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { db } from '../firebase';
 import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
-import { Warehouse, Category, Brand, Unit, Customer, Supplier } from '../types';
+import { Warehouse, Category, Brand, Unit, Customer, Supplier, Product } from '../types';
 
 interface DataContextType {
   warehouses: Warehouse[];
@@ -11,6 +11,7 @@ interface DataContextType {
   units: Unit[];
   customers: Customer[];
   suppliers: Supplier[];
+  products: Product[];
   loading: boolean;
 }
 
@@ -23,6 +24,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [units, setUnits] = useState<Unit[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -33,18 +35,19 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const unsubUni = onSnapshot(collection(db, "units"), (s) => setUnits(s.docs.map(d => ({id: d.id, ...d.data()} as Unit))));
     const unsubCust = onSnapshot(collection(db, "customers"), (s) => setCustomers(s.docs.map(d => ({id: d.id, ...d.data()} as Customer))));
     const unsubSup = onSnapshot(collection(db, "suppliers"), (s) => setSuppliers(s.docs.map(d => ({id: d.id, ...d.data()} as Supplier))));
+    const unsubProd = onSnapshot(collection(db, "products"), (s) => setProducts(s.docs.map(d => ({id: d.id, ...d.data()} as Product))));
 
     // On considère le chargement fini quand les entrepôts sont là (donnée critique)
     const timer = setTimeout(() => setLoading(false), 800);
 
     return () => {
-      unsubWh(); unsubCat(); unsubBra(); unsubUni(); unsubCust(); unsubSup();
+      unsubWh(); unsubCat(); unsubBra(); unsubUni(); unsubCust(); unsubSup(); unsubProd();
       clearTimeout(timer);
     };
   }, []);
 
   return (
-    <DataContext.Provider value={{ warehouses, categories, brands, units, customers, suppliers, loading }}>
+    <DataContext.Provider value={{ warehouses, categories, brands, units, customers, suppliers, products, loading }}>
       {children}
     </DataContext.Provider>
   );

@@ -2,7 +2,7 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { db } from '../firebase';
-import { collection, getDocs, query, orderBy } from 'firebase/firestore';
+import { collection, getDocs, query, orderBy, limit, getAggregateFromServer, sum, count } from 'firebase/firestore';
 import { Sale, Customer, Product, Warehouse } from '../types';
 import { WarningIcon, TrendingUpIcon, CustomersIcon, WarehouseIcon, ChartBarIcon, SparklesIcon, ProductsIcon, PaymentIcon } from '../constants';
 import { useNavigate } from 'react-router-dom';
@@ -15,22 +15,70 @@ const DashboardPage: React.FC = () => {
   const [products, setProducts] = useState<Product[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [loading, setLoading] = useState(true);
+  const [globalStats, setGlobalStats] = useState({
+      totalRevenue: 0,
+      totalCollected: 0,
+      totalCount: 0
+  });
 
   useEffect(() => {
     const fetchData = async () => {
         setLoading(true);
         try {
-            const salesQuery = query(collection(db, "sales"), orderBy("date", "desc"));
-            const [salesSnapshot, customersSnapshot, productsSnapshot, warehousesSnapshot] = await Promise.all([
-                getDocs(salesQuery),
+            // 1. Fetch core data (Products, Customers, Warehouses)
+            const [customersSnapshot, productsSnapshot, warehousesSnapshot] = await Promise.all([
                 getDocs(collection(db, "customers")),
                 getDocs(collection(db, "products")),
                 getDocs(collection(db, "warehouses")),
             ]);
-            setSales(salesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Sale)));
+
             setCustomers(customersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Customer)));
             setProducts(productsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product)));
             setWarehouses(warehousesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Warehouse)));
+
+            // 2. Try optimized fetch (Aggregation + Recent Sales)
+            try {
+                const recentSalesQuery = query(collection(db, "sales"), orderBy("date", "desc"), limit(300));
+                const salesColl = collection(db, "sales");
+                
+                const [salesSnapshot, aggregationSnapshot] = await Promise.all([
+                    getDocs(recentSalesQuery),
+                    getAggregateFromServer(salesColl, {
+                        totalRevenue: sum('grandTotal'),
+                        totalCollected: sum('paidAmount'),
+                        totalCount: count()
+                    })
+                ]);
+
+                setSales(salesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Sale)));
+                
+                const aggData = aggregationSnapshot.data();
+                setGlobalStats({
+                    totalRevenue: aggData.totalRevenue || 0,
+                    totalCollected: aggData.totalCollected || 0,
+                    totalCount: aggData.totalCount || 0
+                });
+
+            } catch (aggError) {
+                console.warn("Aggregation failed, falling back to full fetch", aggError);
+                // Fallback: Fetch ALL sales if aggregation fails
+                const allSalesQuery = query(collection(db, "sales"), orderBy("date", "desc"));
+                const allSalesSnapshot = await getDocs(allSalesQuery);
+                const allSales = allSalesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Sale));
+                
+                setSales(allSales);
+                
+                // Calculate stats client-side
+                const totalRev = allSales.reduce((sum, s) => sum + s.grandTotal, 0);
+                const totalCol = allSales.reduce((sum, s) => sum + (s.paidAmount || 0), 0);
+                
+                setGlobalStats({
+                    totalRevenue: totalRev,
+                    totalCollected: totalCol,
+                    totalCount: allSales.length
+                });
+            }
+
         } catch (err: any) {
             console.error("Dashboard error", err);
         } finally {
@@ -127,8 +175,11 @@ const DashboardPage: React.FC = () => {
 
     const topProducts = Object.values(productPerf).sort((a, b) => b.qty - a.qty).slice(0, 5);
     const topCustomers = Object.values(customerPerf).sort((a, b) => b.total - a.total).slice(0, 5);
-    const totalRevenue = sales.reduce((sum, s) => sum + s.grandTotal, 0);
-    const totalCollected = sales.reduce((sum, s) => sum + (s.paidAmount || 0), 0);
+    
+    // Use global stats for totals
+    const totalRevenue = globalStats.totalRevenue;
+    const totalCollected = globalStats.totalCollected;
+    const totalCount = globalStats.totalCount;
     
     let estProfit = 0;
     sales.forEach(s => s.items.forEach(i => {
@@ -149,8 +200,8 @@ const DashboardPage: React.FC = () => {
         return { ...w, count, value };
     });
 
-    return { dailyRevenue, maxDaily, topProducts, topCustomers, totalRevenue, totalCollected, estProfit, avgSale: sales.length ? Math.ceil(totalRevenue / sales.length) : 0, warehouseStats };
-  }, [sales, products, customers, warehouses]);
+    return { dailyRevenue, maxDaily, topProducts, topCustomers, totalRevenue, totalCollected, estProfit, avgSale: totalCount ? Math.ceil(totalRevenue / totalCount) : 0, warehouseStats };
+  }, [sales, products, customers, warehouses, globalStats]);
 
   if (loading) return <div className="p-24 text-center text-gray-400 font-black uppercase animate-pulse">Chargement du tableau de bord...</div>
 
@@ -177,12 +228,12 @@ const DashboardPage: React.FC = () => {
         <div className="bg-white dark:bg-gray-800 shadow-xl rounded-[2rem] p-6 border-b-4 border-green-500">
           <p className="text-[10px] font-black uppercase text-gray-400 mb-1">Bénéfice Brut Est.</p>
           <p className="text-2xl font-black text-green-600">{formatCurrency(stats.estProfit)}</p>
-          <div className="flex items-center mt-2 text-[10px] font-black uppercase text-green-500"><SparklesIcon className="w-3 h-3 mr-1"/> Estimé</div>
+          <div className="flex items-center mt-2 text-[10px] font-black uppercase text-green-500"><SparklesIcon className="w-3 h-3 mr-1"/> Sur 300 dernières ventes</div>
         </div>
         <div className="bg-white dark:bg-gray-800 shadow-xl rounded-[2rem] p-6 border-b-4 border-blue-500">
           <p className="text-[10px] font-black uppercase text-gray-400 mb-1">Panier Moyen</p>
           <p className="text-2xl font-black text-blue-600">{formatCurrency(stats.avgSale)}</p>
-          <div className="flex items-center mt-2 text-[10px] font-black uppercase text-blue-400"><ChartBarIcon className="w-3 h-3 mr-1"/> {sales.length} ventes</div>
+          <div className="flex items-center mt-2 text-[10px] font-black uppercase text-blue-400"><ChartBarIcon className="w-3 h-3 mr-1"/> {globalStats.totalCount} ventes</div>
         </div>
       </div>
 

@@ -13,16 +13,17 @@ import DropdownMenu, { DropdownMenuItem } from '../components/DropdownMenu';
 
 const ProductsPage: React.FC = () => {
     const { hasPermission } = useAuth();
-    const { categories, brands, units, warehouses, suppliers } = useData(); // Données instantanées
+    const { categories, brands, units, warehouses, suppliers, products } = useData(); // Données instantanées (products added)
     const navigate = useNavigate();
 
-    const [products, setProducts] = useState<Product[]>([]);
-    const [loading, setLoading] = useState(true);
+    // Removed local products state and useEffect fetch
+    const [loading, setLoading] = useState(false); // Can be linked to useData loading if desired, but we want instant display if available
     const [error, setError] = useState<string | null>(null);
     
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedCategory, setSelectedCategory] = useState('all');
     const [selectedBrand, setSelectedBrand] = useState('all');
+    const [selectedSupplier, setSelectedSupplier] = useState('all');
     const [selectedWarehouse, setSelectedWarehouse] = useState('all');
 
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -35,33 +36,23 @@ const ProductsPage: React.FC = () => {
     const [currentPage, setCurrentPage] = useState(1);
     const ITEMS_PER_PAGE = 10;
 
-    useEffect(() => {
-        // Écouteur temps réel uniquement sur les produits
-        const q = query(collection(db, "products"));
-        const unsubscribe = onSnapshot(q, (snapshot) => {
-            setProducts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product)));
-            setLoading(false);
-        }, (err) => {
-            setError("Erreur de chargement des produits.");
-            setLoading(false);
-        });
-        return () => unsubscribe();
-    }, []);
+    // Removed manual fetch useEffect
     
-    useEffect(() => { setCurrentPage(1); }, [searchTerm, selectedCategory, selectedBrand, selectedWarehouse]);
+    useEffect(() => { setCurrentPage(1); }, [searchTerm, selectedCategory, selectedBrand, selectedWarehouse, selectedSupplier]);
 
     const filteredProducts = useMemo(() => {
         return products.filter(product => {
             const term = searchTerm.toLowerCase();
             const categoryMatch = selectedCategory === 'all' || product.categoryId === selectedCategory;
             const brandMatch = selectedBrand === 'all' || product.brandId === selectedBrand;
+            const supplierMatch = selectedSupplier === 'all' || product.supplierId === selectedSupplier;
             const searchMatch = term === '' || product.name.toLowerCase().includes(term) || product.sku.toLowerCase().includes(term);
             const warehouseMatch = selectedWarehouse === 'all' 
                 || (product.stockLevels && product.stockLevels.some(sl => sl.warehouseId === selectedWarehouse));
 
-            return categoryMatch && brandMatch && searchMatch && warehouseMatch;
+            return categoryMatch && brandMatch && supplierMatch && searchMatch && warehouseMatch;
         });
-    }, [products, searchTerm, selectedCategory, selectedBrand, selectedWarehouse]);
+    }, [products, searchTerm, selectedCategory, selectedBrand, selectedWarehouse, selectedSupplier]);
 
     const paginatedProducts = useMemo(() => filteredProducts.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE), [filteredProducts, currentPage]);
     const totalPages = Math.ceil(filteredProducts.length / ITEMS_PER_PAGE);

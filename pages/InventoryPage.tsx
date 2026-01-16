@@ -57,6 +57,8 @@ const InventoryPage: React.FC = () => {
          return (product.stockLevels || []).reduce((sum, level) => sum + level.quantity, 0);
     }
 
+    const getSupplierName = (id?: string) => suppliers.find(s => s.id === id)?.name || 'Inconnu';
+
     const getBorderColor = (color: string = 'blue') => {
         const colorMap: Record<string, string> = {
             'blue': 'border-blue-500', 'emerald': 'border-emerald-500', 'purple': 'border-purple-500', 
@@ -121,6 +123,7 @@ const InventoryPage: React.FC = () => {
                         <thead className="bg-primary-600">
                             <tr>
                                 <th className="px-6 py-4 text-left text-[10px] font-black text-white uppercase tracking-widest">Produit / SKU</th>
+                                <th className="px-6 py-4 text-left text-[10px] font-black text-white uppercase tracking-widest">Fournisseur</th>
                                 {warehouses.map(wh => (
                                     <th key={wh.id} className={`px-6 py-4 text-right text-[10px] font-black text-white uppercase tracking-widest border-b-4 ${getBorderColor(wh.color)}`}>
                                         {wh.name}
