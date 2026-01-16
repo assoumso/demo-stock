@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { db } from '../firebase';
 import { collection, getDocs } from 'firebase/firestore';
-import { Sale, Product, Warehouse, Customer } from '../types';
+import { Sale, Product, Warehouse, Customer, SalePayment } from '../types';
 import { useAuth } from '../hooks/useAuth';
-import { ShoppingCartIcon, TrendingUpIcon, WarningIcon, ChartBarIcon, SparklesIcon } from '../constants';
+import { useReactToPrint } from 'react-to-print';
+import { ShoppingCartIcon, TrendingUpIcon, WarningIcon, ChartBarIcon, SparklesIcon, DownloadIcon, CashIcon, PrintIcon } from '../constants';
 
-type ReportType = 'sales' | 'profit' | 'stock_alert' | 'inventory_value' | 'services';
+type ReportType = 'sales' | 'profit' | 'stock_alert' | 'inventory_value' | 'services' | 'cash';
 
 const thirtyDaysAgo = new Date();
 thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
@@ -18,6 +19,7 @@ const ReportsPage: React.FC = () => {
     const [products, setProducts] = useState<Product[]>([]);
     const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
     const [customers, setCustomers] = useState<Customer[]>([]);
+    const [payments, setPayments] = useState<SalePayment[]>([]);
 
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -28,12 +30,77 @@ const ReportsPage: React.FC = () => {
         warehouseId: 'all',
     });
     
+    const [cashFilters, setCashFilters] = useState({
+        showDetailed: false,
+        includeCredits: false, // If true, implies calculating 'Sales' revenue. If false, implies 'Payments' collected.
+                               // Based on user prompt: "Inclusion ou exclusion des crédits dans le calcul".
+                               // If "Credits included" -> Maybe it means "Sales made on credit" are counted as money? No, that's wrong for "Caisse".
+                               // It likely means: "Show me total Revenue (Sales) vs Total Cash (Payments)".
+                               // Let's implement it as: "Source de données": "Paiements (Encaissé)" vs "Ventes (Engagé)".
+    });
+
+    const cashReportData = useMemo(() => {
+        const start = new Date(filters.startDate);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(filters.endDate);
+        end.setHours(23, 59, 59, 999);
+
+        // 1. Data Source: Payments (Money In)
+        const relevantPayments = payments.filter(p => {
+            const pDate = new Date(p.date);
+            return pDate >= start && pDate <= end;
+        });
+
+        // 2. Data Source: Sales (Revenue Engaged)
+        const relevantSales = sales.filter(s => {
+            const sDate = new Date(s.date);
+            return sDate >= start && sDate <= end;
+        });
+
+        const totalCashIn = relevantPayments.reduce((sum, p) => sum + p.amount, 0);
+        const totalSalesRevenue = relevantSales.reduce((sum, s) => sum + s.grandTotal, 0);
+        const totalCreditSalesValue = relevantSales.filter(s => s.paymentStatus !== 'Payé').reduce((sum, s) => sum + (s.grandTotal - s.paidAmount), 0);
+
+        // Calculate Cost of Goods Sold (COGS) for relevant sales to determine profit
+        let totalCOGS = 0;
+        relevantSales.forEach(sale => {
+            if (sale.items && Array.isArray(sale.items)) {
+                sale.items.forEach(item => {
+                    const product = products.find(p => p.id === item.productId);
+                    if (product) {
+                        const cost = Number(product.cost) || 0;
+                        const quantity = Number(item.quantity) || 0;
+                        totalCOGS += cost * quantity;
+                    }
+                });
+            }
+        });
+        
+        const totalProfit = (Number(totalSalesRevenue) || 0) - totalCOGS;
+
+        return {
+            totalCashIn,
+            totalSalesRevenue,
+            totalCreditSalesValue,
+            totalProfit,
+            payments: relevantPayments,
+            sales: relevantSales
+        };
+    }, [payments, sales, filters, products]);
+
+    const cashReportRef = React.useRef(null);
+    const handlePrintCashReport = useReactToPrint({
+        contentRef: cashReportRef,
+        documentTitle: `Rapport_Caisse_${filters.startDate}_${filters.endDate}`,
+    });
+
     const isAdmin = useMemo(() => user?.role.name.toLowerCase().includes('admin'), [user]);
 
     useEffect(() => {
         const orderedReports: ReportType[] = [];
         if (isAdmin && hasPermission('reports:profit')) orderedReports.push('profit');
         if (hasPermission('reports:sales')) orderedReports.push('sales');
+        if (hasPermission('reports:sales')) orderedReports.push('cash');
         if (hasPermission('reports:services')) orderedReports.push('services');
         if (isAdmin && hasPermission('reports:stock_alert')) orderedReports.push('stock_alert');
         if (hasPermission('reports:inventory_value')) orderedReports.push('inventory_value');
@@ -49,16 +116,18 @@ const ReportsPage: React.FC = () => {
             setLoading(true);
             setError(null);
             try {
-                const [salesSnap, productsSnap, warehousesSnap, customersSnap] = await Promise.all([
+                const [salesSnap, productsSnap, warehousesSnap, customersSnap, paymentsSnap] = await Promise.all([
                     getDocs(collection(db, 'sales')),
                     getDocs(collection(db, 'products')),
                     getDocs(collection(db, 'warehouses')),
                     getDocs(collection(db, 'customers')),
+                    getDocs(collection(db, 'salePayments')),
                 ]);
                 setSales(salesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Sale)));
                 setProducts(productsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product)));
                 setWarehouses(warehousesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Warehouse)));
                 setCustomers(customersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Customer)));
+                setPayments(paymentsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as SalePayment)));
             } catch (err) {
                 console.error("Error fetching report data:", err);
                 setError("Impossible de charger les données pour les rapports.");
@@ -256,6 +325,7 @@ const ReportsPage: React.FC = () => {
                 <nav className="-mb-px flex space-x-6" aria-label="Tabs">
                     {isAdmin && hasPermission('reports:profit') && <ReportTab reportType="profit" label="Marge (P&L)" icon={<TrendingUpIcon className="w-5 h-5"/>}/>}
                     {hasPermission('reports:sales') && <ReportTab reportType="sales" label="Ventes" icon={<ShoppingCartIcon className="w-5 h-5"/>}/>}
+                    {hasPermission('reports:sales') && <ReportTab reportType="cash" label="Caisse" icon={<CashIcon className="w-5 h-5"/>}/>}
                     {hasPermission('reports:services') && <ReportTab reportType="services" label="Services" icon={<SparklesIcon className="w-5 h-5"/>}/>}
                     {isAdmin && hasPermission('reports:stock_alert') && <ReportTab reportType="stock_alert" label="Alertes Stock" icon={<WarningIcon className="w-5 h-5"/>}/>}
                     {hasPermission('reports:inventory_value') && <ReportTab reportType="inventory_value" label="Valeur du Stock" icon={<ChartBarIcon className="w-5 h-5"/>}/>}
@@ -267,6 +337,133 @@ const ReportsPage: React.FC = () => {
                 {error && <p className="text-red-500">{error}</p>}
                 {!loading && !error && (
                     <>
+                        {activeReport === 'cash' && hasPermission('reports:sales') && (
+                            <div>
+                                <div className="mb-6 bg-white dark:bg-gray-800 p-6 rounded-lg shadow space-y-4">
+                                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                                        <div>
+                                            <h3 className="text-lg font-bold text-gray-900 dark:text-white">Configuration du Rapport Caisse</h3>
+                                            <p className="text-sm text-gray-500">Période: {new Date(filters.startDate).toLocaleDateString()} au {new Date(filters.endDate).toLocaleDateString()}</p>
+                                        </div>
+                                        <div className="flex gap-3">
+                                            <button 
+                                                onClick={() => {
+                                                    const today = new Date().toISOString().split('T')[0];
+                                                    setFilters(prev => ({ ...prev, startDate: today, endDate: today }));
+                                                }}
+                                                className="px-4 py-2 bg-blue-100 text-blue-700 rounded-lg text-sm font-bold hover:bg-blue-200"
+                                            >
+                                                Aujourd'hui
+                                            </button>
+                                            <button 
+                                                onClick={handlePrintCashReport}
+                                                className="flex items-center px-4 py-2 bg-gray-900 text-white rounded-lg text-sm font-bold hover:bg-black gap-2"
+                                            >
+                                                <PrintIcon className="w-4 h-4"/> Imprimer / PDF
+                                            </button>
+                                        </div>
+                                    </div>
+                                    
+                                    <div className="flex flex-wrap gap-6 border-t pt-4 dark:border-gray-700">
+                                        <label className="flex items-center gap-2 cursor-pointer">
+                                            <input 
+                                                type="checkbox" 
+                                                checked={cashFilters.includeCredits} 
+                                                onChange={e => setCashFilters(prev => ({ ...prev, includeCredits: e.target.checked }))}
+                                                className="w-4 h-4 rounded text-primary-600 focus:ring-primary-500"
+                                            />
+                                            <span className="text-sm font-medium">Inclure les ventes à crédit (CA Théorique)</span>
+                                        </label>
+                                        <label className="flex items-center gap-2 cursor-pointer">
+                                            <input 
+                                                type="checkbox" 
+                                                checked={cashFilters.showDetailed} 
+                                                onChange={e => setCashFilters(prev => ({ ...prev, showDetailed: e.target.checked }))}
+                                                className="w-4 h-4 rounded text-primary-600 focus:ring-primary-500"
+                                            />
+                                            <span className="text-sm font-medium">Afficher le détail des opérations</span>
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <div ref={cashReportRef} className="bg-white p-8 max-w-4xl mx-auto shadow-lg print:shadow-none print:w-full">
+                                    <div className="text-center mb-8 border-b pb-4">
+                                        <h2 className="text-2xl font-black uppercase tracking-widest text-gray-900">Rapport de Caisse</h2>
+                                        <p className="text-gray-500 mt-1">Période du {new Date(filters.startDate).toLocaleDateString()} au {new Date(filters.endDate).toLocaleDateString()}</p>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 mb-8">
+                                        <div className="bg-green-50 p-6 rounded-2xl border border-green-100">
+                                            <p className="text-sm font-bold text-green-800 uppercase mb-1">Total Encaissé (Réel)</p>
+                                            <p className="text-3xl font-black text-green-600">{formatCurrency(cashReportData.totalCashIn)}</p>
+                                            <p className="text-xs text-green-700 mt-2">Somme des règlements perçus sur la période.</p>
+                                        </div>
+
+                                        <div className="bg-indigo-50 p-6 rounded-2xl border border-indigo-100">
+                                            <p className="text-sm font-bold text-indigo-800 uppercase mb-1">Bénéfice (Estimé)</p>
+                                            <p className="text-3xl font-black text-indigo-600">{formatCurrency(cashReportData.totalProfit)}</p>
+                                            <p className="text-xs text-indigo-700 mt-2">Total Ventes - Coût Marchandises (Sur la période).</p>
+                                        </div>
+                                        
+                                        {cashFilters.includeCredits && (
+                                            <div className="bg-blue-50 p-6 rounded-2xl border border-blue-100">
+                                                <p className="text-sm font-bold text-blue-800 uppercase mb-1">Chiffre d'Affaires (Théorique)</p>
+                                                <p className="text-3xl font-black text-blue-600">{formatCurrency(cashReportData.totalSalesRevenue)}</p>
+                                                <p className="text-xs text-blue-700 mt-2">Total des ventes validées (inclus crédits).</p>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {cashFilters.includeCredits && (
+                                        <div className="mb-8 p-4 bg-yellow-50 rounded-xl border border-yellow-100 flex justify-between items-center">
+                                            <span className="font-bold text-yellow-800">Crédits accordés sur la période (Non encaissés)</span>
+                                            <span className="font-black text-yellow-600 text-xl">{formatCurrency(cashReportData.totalCreditSalesValue)}</span>
+                                        </div>
+                                    )}
+
+                                    {cashFilters.showDetailed && (
+                                        <div className="mt-8">
+                                            <h3 className="font-bold text-lg mb-4 border-b pb-2">Détail des Encaissements</h3>
+                                            <table className="w-full text-sm">
+                                                <thead>
+                                                    <tr className="bg-gray-100">
+                                                        <th className="p-2 text-left">Date</th>
+                                                        <th className="p-2 text-left">Réf</th>
+                                                        <th className="p-2 text-left">Mode</th>
+                                                        <th className="p-2 text-right">Montant</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y">
+                                                    {cashReportData.payments.length === 0 ? (
+                                                        <tr><td colSpan={4} className="p-4 text-center italic text-gray-500">Aucun encaissement sur cette période.</td></tr>
+                                                    ) : (
+                                                        cashReportData.payments.map((p, idx) => (
+                                                            <tr key={idx}>
+                                                                <td className="p-2">{new Date(p.date).toLocaleDateString()} {new Date(p.date).toLocaleTimeString()}</td>
+                                                                <td className="p-2">{p.saleId ? (p.saleId.startsWith('OPENING') ? 'SOLDE OUVERTURE' : 'VENTE') : 'ACHAT'}</td>
+                                                                <td className="p-2 uppercase text-xs font-bold">{p.method}</td>
+                                                                <td className="p-2 text-right font-mono">{formatCurrency(p.amount)}</td>
+                                                            </tr>
+                                                        ))
+                                                    )}
+                                                </tbody>
+                                                <tfoot className="border-t-2 border-black">
+                                                    <tr>
+                                                        <td colSpan={3} className="p-2 text-right font-black uppercase">Total Période</td>
+                                                        <td className="p-2 text-right font-black">{formatCurrency(cashReportData.totalCashIn)}</td>
+                                                    </tr>
+                                                </tfoot>
+                                            </table>
+                                        </div>
+                                    )}
+                                    
+                                    <div className="mt-12 text-center text-xs text-gray-400">
+                                        <p>Rapport généré le {new Date().toLocaleDateString()} à {new Date().toLocaleTimeString()}</p>
+                                        <p>Document à usage interne uniquement.</p>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                         {activeReport === 'sales' && hasPermission('reports:sales') && (
                             <div>
                                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
