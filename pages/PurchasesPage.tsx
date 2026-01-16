@@ -250,7 +250,7 @@ const PurchasesPage: React.FC = () => {
         }
     };
     
-    const formatCurrency = (v: number) => new Intl.NumberFormat('fr-FR').format(v) + ' FCFA';
+    const formatCurrency = (v: number) => new Intl.NumberFormat('fr-FR').format(v).replace(/\u202f/g, ' ') + ' FCFA';
     const areAllOnPageSelected = paginatedPurchases.length > 0 && selectedIds.length === paginatedPurchases.length;
     const getPaymentStatusBadge = (s: Purchase['paymentStatus']) => ({'Payé': 'bg-green-100 text-green-800','Partiel': 'bg-blue-100 text-blue-800','En attente': 'bg-yellow-100 text-yellow-800'}[s] || '');
     const getPurchaseStatusBadge = (s: Purchase['purchaseStatus']) => ({'Reçu': 'bg-green-100 text-green-800','Commandé': 'bg-blue-100 text-blue-800','En attente': 'bg-yellow-100 text-yellow-800'}[s] || '');

@@ -11,7 +11,7 @@ import { permissionConfig } from '../config/permissions';
 
 const initialSettings: AppSettings = {
     id: 'app-config',
-    companyName: 'ETS-DEMO',
+    companyName: 'ETS-COULIBALY & FRERES',
     companyAddress: 'Cotonou, Bénin',
     companyPhone: '+229 00 00 00 00',
     companyEmail: 'contact@demo.com',

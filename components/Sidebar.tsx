@@ -65,16 +65,18 @@ const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen }) => {
           {/* Logo & Name */}
           <NavLink end to="/" className="flex-1 min-w-0 mr-4">
             <div className="flex items-center">
-                <div className="w-8 h-8 flex items-center justify-center shrink-0 overflow-hidden">
-                    {logoUrl ? (
-                        <img 
-                            src={logoUrl} 
-                            alt="Logo" 
-                            className="w-full h-full object-contain" 
-                        />
-                    ) : (
-                        <LogoIcon className="w-8 h-8 text-primary-500 shrink-0" />
-                    )}
+                <div className="w-8 h-8 flex items-center justify-center shrink-0 overflow-hidden relative">
+                    <img 
+                        src={logoUrl || "/logo.png"} 
+                        alt="Logo" 
+                        className="w-full h-full object-contain" 
+                        onError={(e) => {
+                            // Fallback if image fails to load
+                            e.currentTarget.style.display = 'none';
+                            e.currentTarget.parentElement?.querySelector('.fallback-icon-svg')?.classList.remove('hidden');
+                        }}
+                    />
+                    <LogoIcon className="w-8 h-8 text-primary-500 shrink-0 hidden fallback-icon-svg absolute" />
                 </div>
                 <span 
                     className="ml-3 text-base font-bold text-white uppercase truncate overflow-hidden whitespace-nowrap"

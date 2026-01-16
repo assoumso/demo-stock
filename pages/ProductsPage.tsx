@@ -93,7 +93,7 @@ const ProductsPage: React.FC = () => {
         } catch (err) { setError("Erreur lors de la suppression groupée."); }
     };
 
-    const formatCurrency = (value: number) => new Intl.NumberFormat('fr-FR').format(value) + ' FCFA';
+    const formatCurrency = (value: number) => new Intl.NumberFormat('fr-FR').format(value).replace(/\u202f/g, ' ') + ' FCFA';
 
     return (
         <div className="pb-10">

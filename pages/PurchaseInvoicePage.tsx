@@ -26,7 +26,7 @@ interface InvoiceTemplateProps {
 }
 
 const InvoiceTemplate: React.FC<InvoiceTemplateProps> = ({ purchase, supplier, products, companyInfo }) => {
-    const formatCurrency = (value: number) => new Intl.NumberFormat('fr-FR').format(value) + ` ${companyInfo.currencySymbol || 'FCFA'}`;
+    const formatCurrency = (value: number) => new Intl.NumberFormat('fr-FR').format(value).replace(/\u202f/g, ' ') + ` ${companyInfo.currencySymbol || 'FCFA'}`;
     const itemsSubtotal = purchase.items.reduce((sum, item) => sum + item.subtotal, 0);
     const remainingBalance = purchase.grandTotal - purchase.paidAmount;
 
@@ -35,7 +35,7 @@ const InvoiceTemplate: React.FC<InvoiceTemplateProps> = ({ purchase, supplier, p
             <header>
                 <div className="flex justify-between items-start mb-8">
                     <div className="flex items-center space-x-4">
-                        {companyInfo.logoUrl && <img src={companyInfo.logoUrl} alt="Company Logo" className="h-20 w-auto" crossOrigin="anonymous" />}
+                        <img src={companyInfo.logoUrl || '/logo.png'} alt="Company Logo" className="h-20 w-auto" crossOrigin="anonymous" onError={(e) => e.currentTarget.style.display = 'none'} />
                         <div>
                             <h1 className="text-3xl font-bold text-gray-800">{companyInfo.name}</h1>
                             <p className="text-sm text-gray-600">{companyInfo.address}</p>
@@ -130,7 +130,7 @@ const PurchaseInvoicePage: React.FC = () => {
     const [supplier, setSupplier] = useState<Supplier | undefined>(undefined);
     const [allProducts, setAllProducts] = useState<Product[]>([]);
     const [companyInfo, setCompanyInfo] = useState<CompanyInfo>({
-        name: 'ETS-DEMO',
+        name: 'ETS-COULIBALY & FRERES',
         address: '',
         phone: '',
         email: '',

@@ -321,7 +321,7 @@ const PosPage: React.FC = () => {
         }
     };
 
-    const formatCurrency = (v: number) => new Intl.NumberFormat('fr-FR').format(v) + ' FCFA';
+    const formatCurrency = (v: number) => new Intl.NumberFormat('fr-FR').format(v).replace(/\u202f/g, ' ') + ' FCFA';
     
     if (loading) return <div className="p-12 text-center animate-pulse uppercase font-black text-gray-400">Chargement...</div>;
 
@@ -471,7 +471,7 @@ const PosPage: React.FC = () => {
                 <div className="pt-6 border-t dark:border-gray-700 space-y-4">
                     <div className="flex justify-between items-baseline">
                         <span className="text-xs font-black uppercase text-gray-400">Total à payer</span>
-                        <span className="text-3xl font-black text-primary-600">{cartTotal.toLocaleString('fr-FR')} <span className="text-sm">{settings.currencySymbol}</span></span>
+                        <span className="text-3xl font-black text-primary-600">{cartTotal.toLocaleString('fr-FR').replace(/\u202f/g, ' ')} <span className="text-sm">{settings.currencySymbol}</span></span>
                     </div>
                     <button 
                         onClick={() => { setIsPaymentModalOpen(true); setAmountTendered(cartTotal); }} 

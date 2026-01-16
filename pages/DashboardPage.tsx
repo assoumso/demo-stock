@@ -40,7 +40,7 @@ const DashboardPage: React.FC = () => {
     fetchData();
   }, []);
 
-  const formatCurrency = (value: number) => new Intl.NumberFormat('fr-FR').format(value) + ' FCFA';
+  const formatCurrency = (value: number) => new Intl.NumberFormat('fr-FR').format(value).replace(/\u202f/g, ' ') + ' FCFA';
 
   const getWarehouseColor = (color?: string) => {
       const colors: Record<string, string> = {
@@ -149,7 +149,7 @@ const DashboardPage: React.FC = () => {
         return { ...w, count, value };
     });
 
-    return { dailyRevenue, maxDaily, topProducts, topCustomers, totalRevenue, totalCollected, estProfit, avgSale: sales.length ? totalRevenue / sales.length : 0, warehouseStats };
+    return { dailyRevenue, maxDaily, topProducts, topCustomers, totalRevenue, totalCollected, estProfit, avgSale: sales.length ? Math.ceil(totalRevenue / sales.length) : 0, warehouseStats };
   }, [sales, products, customers, warehouses]);
 
   if (loading) return <div className="p-24 text-center text-gray-400 font-black uppercase animate-pulse">Chargement du tableau de bord...</div>

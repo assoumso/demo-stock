@@ -26,7 +26,7 @@ interface InvoiceTemplateProps {
 }
 
 const InvoiceTemplate: React.FC<InvoiceTemplateProps> = ({ sale, customer, products, companyInfo }) => {
-    const formatCurrency = (value: number) => new Intl.NumberFormat('fr-FR').format(value) + ` ${companyInfo.currencySymbol || 'FCFA'}`;
+    const formatCurrency = (value: number) => new Intl.NumberFormat('fr-FR').format(value).replace(/\u202f/g, ' ') + ` ${companyInfo.currencySymbol || 'FCFA'}`;
     const itemsSubtotal = sale.items.reduce((sum, item) => sum + item.subtotal, 0);
     const remainingBalance = sale.grandTotal - sale.paidAmount;
 

@@ -29,16 +29,17 @@ const LoginPage: React.FC = () => {
     <div className="flex items-center justify-center min-h-screen bg-gray-100 dark:bg-gray-900 px-4 py-12">
       <div className="w-full max-w-md p-8 space-y-6 bg-white rounded-2xl shadow-xl dark:bg-gray-800 border border-gray-100 dark:border-gray-700">
         <div className="text-center overflow-hidden">
-            <div className="bg-primary-50 dark:bg-primary-900/30 w-20 h-20 rounded-2xl flex items-center justify-center mx-auto mb-4 shrink-0 overflow-hidden">
-                {logoUrl ? (
-                    <img 
-                        src={logoUrl} 
-                        alt="Logo" 
-                        className="max-w-full max-h-full object-contain p-1" 
-                    />
-                ) : (
-                    <LogoIcon className="w-12 h-12 text-primary-600"/>
-                )}
+            <div className="bg-primary-50 dark:bg-primary-900/30 w-20 h-20 rounded-2xl flex items-center justify-center mx-auto mb-4 shrink-0 overflow-hidden relative">
+                <img 
+                    src={logoUrl || "/logo.png"} 
+                    alt="Logo" 
+                    className="max-w-full max-h-full object-contain p-1"
+                    onError={(e) => {
+                         e.currentTarget.style.display = 'none';
+                         e.currentTarget.parentElement?.querySelector('.fallback-icon')?.classList.remove('hidden');
+                    }} 
+                />
+                <LogoIcon className="w-12 h-12 text-primary-600 absolute fallback-icon hidden"/>
             </div>
             <h1 
                 className="text-2xl font-black text-gray-900 dark:text-white uppercase tracking-tight truncate px-2"

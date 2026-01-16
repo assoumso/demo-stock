@@ -42,7 +42,7 @@ export const ThemeProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   });
 
   const [companyName, setCompanyName] = useState<string>(() => {
-    return localStorage.getItem('app_company_name') || 'ETS-DEMO';
+    return localStorage.getItem('app_company_name') || 'ETS-COULIBALY & FRERES';
   });
 
   const [logoUrl, setLogoUrl] = useState<string>(() => {

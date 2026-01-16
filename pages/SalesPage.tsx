@@ -122,7 +122,7 @@ const SalesPage: React.FC = () => {
         } catch (err: any) { setError(err.message); } finally { setIsProcessing(null); }
     };
 
-    const formatCurrency = (v: number) => new Intl.NumberFormat('fr-FR').format(v) + ' FCFA';
+    const formatCurrency = (v: number) => new Intl.NumberFormat('fr-FR').format(v).replace(/\u202f/g, ' ') + ' FCFA';
     const getPaymentBadge = (s: Sale['paymentStatus']) => ({'Payé': 'bg-green-100 text-green-800','Partiel': 'bg-blue-100 text-blue-800','En attente': 'bg-yellow-100 text-yellow-800'}[s] || '');
 
     return (

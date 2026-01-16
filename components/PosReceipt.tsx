@@ -13,7 +13,7 @@ const PosReceipt = React.forwardRef<HTMLDivElement, PosReceiptProps>(
     ({ sale, customer, products, companyInfo, warehouse }, ref) => {
     
     const formatCurrency = (value: number) => 
-        new Intl.NumberFormat('fr-FR').format(value) + ` ${companyInfo.currencySymbol || 'FCFA'}`;
+        new Intl.NumberFormat('fr-FR').format(value).replace(/\u202f/g, ' ') + ` ${companyInfo.currencySymbol || 'FCFA'}`;
 
     const getProductName = (productId: string) => {
         return products.find(p => p.id === productId)?.name || 'Produit inconnu';
@@ -67,8 +67,8 @@ const PosReceipt = React.forwardRef<HTMLDivElement, PosReceiptProps>(
                         <tr key={item.productId}>
                             <td className="text-left">{getProductName(item.productId)}</td>
                             <td className="text-center">{item.quantity}</td>
-                            <td className="text-right">{item.price.toLocaleString('fr-FR')}</td>
-                            <td className="text-right">{item.subtotal.toLocaleString('fr-FR')}</td>
+                            <td className="text-right">{item.price.toLocaleString('fr-FR').replace(/\u202f/g, ' ')}</td>
+                            <td className="text-right">{item.subtotal.toLocaleString('fr-FR').replace(/\u202f/g, ' ')}</td>
                         </tr>
                     ))}
                 </tbody>

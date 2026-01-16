@@ -21,7 +21,7 @@ interface AccountMovement {
     purchaseId?: string;
 }
 
-const formatCurrency = (v: number) => new Intl.NumberFormat('fr-FR').format(v) + ' FCFA';
+const formatCurrency = (v: number) => new Intl.NumberFormat('fr-FR').format(v).replace(/\u202f/g, ' ') + ' FCFA';
 
 const SupplierAccountPage: React.FC = () => {
     const { id } = useParams<{ id: string }>();

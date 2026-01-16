@@ -21,7 +21,7 @@ interface AccountMovement {
     saleId?: string;    // ID de la vente associée (pour mise à jour solde)
 }
 
-const formatCurrency = (v: number) => new Intl.NumberFormat('fr-FR').format(v) + ' FCFA';
+const formatCurrency = (v: number) => new Intl.NumberFormat('fr-FR').format(v).replace(/\u202f/g, ' ') + ' FCFA';
 
 const CustomerAccountPage: React.FC = () => {
     const { id } = useParams<{ id: string }>();

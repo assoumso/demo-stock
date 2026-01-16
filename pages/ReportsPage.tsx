@@ -150,7 +150,7 @@ const ReportsPage: React.FC = () => {
         setFilters(prev => ({ ...prev, [e.target.name]: e.target.value }));
     };
 
-    const formatCurrency = (value: number) => new Intl.NumberFormat('fr-FR').format(value) + ' FCFA';
+    const formatCurrency = (value: number) => new Intl.NumberFormat('fr-FR').format(value).replace(/\u202f/g, ' ') + ' FCFA';
     const formatDate = (dateString: string) => new Date(dateString).toLocaleDateString('fr-FR');
 
     const userVisibleSales = useMemo(() => {
