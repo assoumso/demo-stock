@@ -27,7 +27,8 @@ const PurchasesPage: React.FC = () => {
     const [isBulkDeleteModalOpen, setIsBulkDeleteModalOpen] = useState(false);
 
     const [currentPage, setCurrentPage] = useState(1);
-    const ITEMS_PER_PAGE = 10;
+    const [itemsPerPage, setItemsPerPage] = useState(20);
+    const [showAll, setShowAll] = useState(false);
     
     const [filters, setFilters] = useState({
         startDate: '',
@@ -103,8 +104,12 @@ const PurchasesPage: React.FC = () => {
         });
     }, [purchases, filters, userVisibleWarehouses]);
 
-    const paginatedPurchases = useMemo(() => filteredPurchases.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE), [filteredPurchases, currentPage]);
-    const totalPages = Math.ceil(filteredPurchases.length / ITEMS_PER_PAGE);
+    const paginatedPurchases = useMemo(() => {
+        if (showAll) return filteredPurchases;
+        return filteredPurchases.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+    }, [filteredPurchases, currentPage, itemsPerPage, showAll]);
+    
+    const totalPages = Math.ceil(filteredPurchases.length / itemsPerPage);
 
     const getSupplierName = (id: string) => suppliers.find(c => c.id === id)?.name || 'N/A';
     
@@ -262,6 +267,9 @@ const PurchasesPage: React.FC = () => {
                 <h1 className="text-2xl font-semibold text-gray-900 dark:text-white">Liste des Achats</h1>
                  <div className="flex items-center space-x-2">
                     {selectedIds.length > 0 && <button onClick={() => setIsBulkDeleteModalOpen(true)} disabled={!!isProcessing} className="flex items-center px-4 py-2 text-sm text-white bg-red-600 rounded-md hover:bg-red-700 disabled:bg-red-300"><DeleteIcon className="w-5 h-5 mr-2" />Supprimer ({selectedIds.length})</button>}
+                    <button onClick={() => setShowAll(!showAll)} className="px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300 font-bold uppercase text-xs transition-colors">
+                        {showAll ? 'Vue par page' : 'Tout afficher'}
+                    </button>
                     <button onClick={() => navigate('/purchases/new')} disabled={!!isProcessing} className="flex items-center px-4 py-2 text-sm text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:bg-primary-300"><PlusIcon className="w-5 h-5 mr-2" />Ajouter un Achat</button>
                 </div>
             </div>
@@ -318,7 +326,7 @@ const PurchasesPage: React.FC = () => {
                     </tbody>
                 </table>
             </div>
-            <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} totalItems={filteredPurchases.length} itemsPerPage={ITEMS_PER_PAGE} />
+            {!showAll && <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} totalItems={filteredPurchases.length} itemsPerPage={itemsPerPage} />}
             </>
             )}
             <Modal isOpen={isBulkDeleteModalOpen} onClose={() => setIsBulkDeleteModalOpen(false)} title="Confirmer la suppression">

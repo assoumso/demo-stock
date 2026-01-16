@@ -26,7 +26,8 @@ const SalesPage: React.FC = () => {
     const [isBulkDeleteModalOpen, setIsBulkDeleteModalOpen] = useState(false);
 
     const [currentPage, setCurrentPage] = useState(1);
-    const ITEMS_PER_PAGE = 10;
+    const [itemsPerPage, setItemsPerPage] = useState(20);
+    const [showAll, setShowAll] = useState(false);
     
     const [filters, setFilters] = useState({
         startDate: '',
@@ -82,8 +83,12 @@ const SalesPage: React.FC = () => {
         });
     }, [sales, filters, userVisibleWarehouses]);
 
-    const paginatedSales = useMemo(() => filteredSales.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE), [filteredSales, currentPage]);
-    const totalPages = Math.ceil(filteredSales.length / ITEMS_PER_PAGE);
+    const paginatedSales = useMemo(() => {
+        if (showAll) return filteredSales;
+        return filteredSales.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+    }, [filteredSales, currentPage, itemsPerPage, showAll]);
+    
+    const totalPages = Math.ceil(filteredSales.length / itemsPerPage);
 
     const getCustomerName = (id: string) => customers.find(c => c.id === id)?.name || 'Inconnu';
     const handleFilterChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -132,7 +137,12 @@ const SalesPage: React.FC = () => {
                     <h1 className="text-3xl font-black text-gray-900 dark:text-white uppercase tracking-tight">Journal des Ventes</h1>
                     <p className="text-gray-500 text-sm">Gestion des factures et encaissements.</p>
                 </div>
-                <button onClick={() => navigate('/sales/new')} className="flex items-center px-6 py-3 bg-primary-600 text-white rounded-xl hover:bg-primary-700 font-black uppercase text-xs shadow-xl"><PlusIcon className="w-5 h-5 mr-2" />Nouvelle Vente</button>
+                <div className="flex space-x-2">
+                    <button onClick={() => setShowAll(!showAll)} className="px-4 py-3 bg-gray-200 text-gray-800 rounded-xl hover:bg-gray-300 font-bold uppercase text-xs transition-colors">
+                        {showAll ? 'Vue par page' : 'Tout afficher'}
+                    </button>
+                    <button onClick={() => navigate('/sales/new')} className="flex items-center px-6 py-3 bg-primary-600 text-white rounded-xl hover:bg-primary-700 font-black uppercase text-xs shadow-xl"><PlusIcon className="w-5 h-5 mr-2" />Nouvelle Vente</button>
+                </div>
             </div>
 
             <div className="mb-6 bg-white dark:bg-gray-800 p-4 rounded-3xl shadow-xl border dark:border-gray-700">
@@ -199,7 +209,7 @@ const SalesPage: React.FC = () => {
                     </div>
                 </div>
             )}
-            <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} totalItems={filteredSales.length} itemsPerPage={ITEMS_PER_PAGE} />
+            {!showAll && <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} totalItems={filteredSales.length} itemsPerPage={itemsPerPage} />}
         </div>
     );
 };

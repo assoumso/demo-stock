@@ -44,7 +44,8 @@ const TransfersPage: React.FC = () => {
 
     // Pagination
     const [currentPage, setCurrentPage] = useState(1);
-    const ITEMS_PER_PAGE = 10;
+    const [itemsPerPage, setItemsPerPage] = useState(20);
+    const [showAll, setShowAll] = useState(false);
     
     // State for viewing transfer details
     const [selectedTransfer, setSelectedTransfer] = useState<WarehouseTransfer | null>(null);
@@ -425,9 +426,11 @@ const TransfersPage: React.FC = () => {
     }, [transfers, filters]);
 
     const paginatedTransfers = useMemo(() => {
-        return filteredTransfers.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
-    }, [filteredTransfers, currentPage]);
-    const totalPages = Math.ceil(filteredTransfers.length / ITEMS_PER_PAGE);
+        if (showAll) return filteredTransfers;
+        return filteredTransfers.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+    }, [filteredTransfers, currentPage, itemsPerPage, showAll]);
+    
+    const totalPages = Math.ceil(filteredTransfers.length / itemsPerPage);
 
     return (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -557,7 +560,15 @@ const TransfersPage: React.FC = () => {
                 )}
             </div>
             <div className="lg:col-span-2">
-                 <h2 className="text-xl font-bold mb-4">Historique des transferts</h2>
+                 <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-xl font-bold">Historique des transferts</h2>
+                    <button 
+                        onClick={() => setShowAll(!showAll)} 
+                        className="px-3 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 font-bold uppercase text-xs transition-colors"
+                    >
+                        {showAll ? 'Vue par page' : 'Tout afficher'}
+                    </button>
+                 </div>
 
                 <div className="mb-4 bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md">
                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -655,7 +666,7 @@ const TransfersPage: React.FC = () => {
                             </tbody>
                         </table>
                     </div>
-                     <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} totalItems={filteredTransfers.length} itemsPerPage={ITEMS_PER_PAGE} />
+                     {!showAll && <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} totalItems={filteredTransfers.length} itemsPerPage={itemsPerPage} />}
                     </>
                  )}
             </div>
