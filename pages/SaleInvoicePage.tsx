@@ -1,10 +1,12 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { db } from '../firebase';
 import { doc, getDoc, collection, getDocs, query, where } from 'firebase/firestore';
 import { Sale, Customer, Product, AppSettings, SalePayment, Warehouse } from '../types';
-import { PrintIcon, ArrowLeftIcon, WhatsappIcon } from '../constants';
+import { PrintIcon, ArrowLeftIcon, WhatsappIcon, DocumentTextIcon } from '../constants';
+import { useReactToPrint } from 'react-to-print';
+import { DeliveryNotePrint } from '../components/DeliveryNotePrint';
 
 interface CompanyInfo {
     name: string;
@@ -176,6 +178,14 @@ const SaleInvoicePage: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [isSharing, setIsSharing] = useState(false);
+
+    // Delivery Note Logic
+    const deliveryNoteRef = useRef<HTMLDivElement>(null);
+    const handlePrintDeliveryNote = useReactToPrint({ contentRef: deliveryNoteRef });
+
+    // Combined Print Logic
+    const combinedRef = useRef<HTMLDivElement>(null);
+    const handlePrintAll = useReactToPrint({ contentRef: combinedRef });
 
     useEffect(() => {
         const fetchInvoiceData = async () => {
@@ -357,11 +367,18 @@ const SaleInvoicePage: React.FC = () => {
                         )}
                     </button>
                     <button
+                        onClick={() => handlePrintDeliveryNote()}
+                        className="flex items-center px-4 py-2 text-sm text-gray-700 bg-yellow-400 rounded-md hover:bg-yellow-500 font-bold"
+                    >
+                        <DocumentTextIcon className="w-5 h-5 mr-2" />
+                        Bon de Livraison
+                    </button>
+                    <button
                         onClick={() => window.print()}
                         className="flex items-center px-4 py-2 text-sm text-white bg-primary-600 rounded-md hover:bg-primary-700"
                     >
                         <PrintIcon className="w-5 h-5 mr-2" />
-                        Imprimer / PDF
+                        Imprimer Facture
                     </button>
                 </div>
             </header>
@@ -375,6 +392,37 @@ const SaleInvoicePage: React.FC = () => {
                     warehouse={warehouse}
                 />
             </main>
+            
+            {/* Hidden Delivery Note Template for Printing */}
+            <div className="hidden">
+                <div ref={deliveryNoteRef}>
+                    <DeliveryNotePrint
+                        sale={sale}
+                        customer={customer}
+                        products={allProducts}
+                        companyInfo={companyInfo}
+                        warehouse={warehouse}
+                    />
+                </div>
+                <div ref={combinedRef}>
+                    <InvoiceTemplate
+                        sale={sale}
+                        customer={customer}
+                        products={allProducts}
+                        companyInfo={companyInfo}
+                        payments={payments}
+                        warehouse={warehouse}
+                    />
+                    <div style={{ pageBreakBefore: 'always' }} />
+                    <DeliveryNotePrint
+                        sale={sale}
+                        customer={customer}
+                        products={allProducts}
+                        companyInfo={companyInfo}
+                        warehouse={warehouse}
+                    />
+                </div>
+            </div>
         </div>
     );
 };

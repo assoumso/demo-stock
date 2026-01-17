@@ -43,7 +43,7 @@ const Header: React.FC<HeaderProps> = ({ sidebarOpen, setSidebarOpen }) => {
                 // Alertes Échéances (Ventes)
                 sales.forEach(sale => {
                     if (!sale.paymentDueDate || sale.paymentStatus === 'Payé') return;
-                    if (!user.role?.name.toLowerCase().includes('admin') && !user.warehouseIds?.includes(sale.warehouseId)) return;
+                    if (!user.role?.name?.toLowerCase().includes('admin') && !user.warehouseIds?.includes(sale.warehouseId)) return;
                     
                     const dueDate = new Date(sale.paymentDueDate);
                     const diffDays = Math.ceil((dueDate.getTime() - now.getTime()) / (1000 * 3600 * 24));

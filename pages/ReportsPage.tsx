@@ -94,7 +94,7 @@ const ReportsPage: React.FC = () => {
         documentTitle: `Rapport_Caisse_${filters.startDate}_${filters.endDate}`,
     });
 
-    const isAdmin = useMemo(() => user?.role.name.toLowerCase().includes('admin'), [user]);
+    const isAdmin = useMemo(() => user?.role?.name?.toLowerCase().includes('admin'), [user]);
 
     useEffect(() => {
         const orderedReports: ReportType[] = [];

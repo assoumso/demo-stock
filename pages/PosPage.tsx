@@ -112,9 +112,9 @@ const PosPage: React.FC = () => {
     }, [selectedCustomerId]);
 
     const userVisibleWarehouses = useMemo(() => {
-        if (!user) return [];
+        if (!user || !user.role) return [];
         const userWarehouseIds = user.warehouseIds || [];
-        if (user.role.name.toLowerCase().includes('admin')) {
+        if (user.role.name?.toLowerCase().includes('admin')) {
             return warehouses;
         }
         return warehouses.filter(wh => userWarehouseIds.includes(wh.id));

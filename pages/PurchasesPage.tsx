@@ -82,8 +82,8 @@ const PurchasesPage: React.FC = () => {
     useEffect(() => { setSelectedIds([]); }, [currentPage]);
 
     const userVisibleWarehouses = useMemo(() => {
-        if (!user) return [];
-        if (user.role.name.toLowerCase().includes('admin')) return warehouses;
+        if (!user || !user.role) return [];
+        if (user.role.name?.toLowerCase().includes('admin')) return warehouses;
         return warehouses.filter(wh => user.warehouseIds?.includes(wh.id));
     }, [user, warehouses]);
 

@@ -16,6 +16,11 @@ const SaleFormPage: React.FC = () => {
     const { user } = useAuth();
     const isEditing = !!id;
 
+    // Debug logging
+    useEffect(() => {
+        console.log("SaleFormPage mounted", { id, user: user?.uid });
+    }, [id, user]);
+
     const [customers, setCustomers] = useState<Customer[]>([]);
     const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
     const [products, setProducts] = useState<Product[]>([]);
@@ -130,8 +135,8 @@ const SaleFormPage: React.FC = () => {
     }, [formState.customerId, id, customers]);
     
     const userVisibleWarehouses = useMemo(() => {
-        if (!user) return [];
-        if (user.role.name.toLowerCase().includes('admin')) return warehouses;
+        if (!user || !user.role) return [];
+        if (user.role.name?.toLowerCase().includes('admin')) return warehouses;
         return warehouses.filter(wh => user.warehouseIds?.includes(wh.id));
     }, [user, warehouses]);
 
@@ -335,15 +340,24 @@ const SaleFormPage: React.FC = () => {
         navigate('/customers/new', { state: { returnTo: location.pathname } });
     };
 
-    const getProductName = (productId: string) => products.find(p => p.id === productId)?.name || 'Produit inconnu';
-    const formatCurrency = (value?: number) => new Intl.NumberFormat('fr-FR').format(value || 0) + ' Fcfa';
+    const getProductName = (productId: string) => {
+        try {
+            return products.find(p => p.id === productId)?.name || 'Produit inconnu';
+        } catch (e) { return 'Erreur produit'; }
+    };
+    const formatCurrency = (value?: number) => {
+        try {
+            if (typeof value !== 'number' || isNaN(value)) return '0 Fcfa';
+            return new Intl.NumberFormat('fr-FR').format(value).replace(/\u202f/g, ' ') + ' Fcfa';
+        } catch (e) { return '0 Fcfa'; }
+    };
     const inputFormClasses = "mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white transition-all focus:ring-primary-500 focus:border-primary-500";
 
     if (loading) return <div className="text-center p-8 text-gray-400 font-bold animate-pulse">Initialisation...</div>;
 
     return (
         <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md">
-            <form onSubmit={handleFormSubmitCorrected} className="space-y-6">
+            <form onSubmit={handleFormSubmit} className="space-y-6">
                 <div className="flex justify-between items-center">
                     <h1 className="text-xl font-bold text-gray-800 dark:text-white uppercase tracking-tight">{isEditing ? `Modifier la Vente` : "Créer une Vente"}</h1>
                     <button type="button" onClick={() => navigate('/sales')} className="text-sm text-gray-500 font-bold hover:text-gray-900 dark:hover:white uppercase">&larr; Retour</button>

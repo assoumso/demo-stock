@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo, FormEvent } from 'react';
+import React, { useState, useEffect, useMemo, useRef, FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { db, storage } from '../firebase';
 import { collection, doc, query, orderBy, where, runTransaction, onSnapshot, limit, DocumentReference } from 'firebase/firestore';
@@ -45,6 +45,39 @@ const SalesPage: React.FC = () => {
     const [isSubmittingPayment, setIsSubmittingPayment] = useState(false);
     const [limitCount, setLimitCount] = useState(50);
 
+    // Autocomplete State
+    const [customerSearch, setCustomerSearch] = useState('');
+    const [showCustomerSuggestions, setShowCustomerSuggestions] = useState(false);
+    const customerWrapperRef = useRef<HTMLDivElement>(null);
+
+    // Close suggestions on click outside
+    useEffect(() => {
+        function handleClickOutside(event: MouseEvent) {
+            if (customerWrapperRef.current && !customerWrapperRef.current.contains(event.target as Node)) {
+                setShowCustomerSuggestions(false);
+            }
+        }
+        document.addEventListener("mousedown", handleClickOutside);
+        return () => {
+            document.removeEventListener("mousedown", handleClickOutside);
+        };
+    }, []);
+
+    // Sync customerSearch with selected filter
+    useEffect(() => {
+        if (filters.customerId === 'all') {
+            setCustomerSearch('');
+        } else {
+            const c = customers.find(c => c.id === filters.customerId);
+            if (c && c.name !== customerSearch) setCustomerSearch(c.name);
+        }
+    }, [filters.customerId, customers]);
+
+    const filteredCustomers = useMemo(() => {
+        if (!customerSearch) return customers.slice(0, 10);
+        return customers.filter(c => c.name.toLowerCase().includes(customerSearch.toLowerCase()));
+    }, [customers, customerSearch]);
+
     useEffect(() => {
         // Chargement réactif uniquement des ventes
         const q = query(collection(db, "sales"), orderBy("date", "desc"), limit(limitCount));
@@ -61,26 +94,53 @@ const SalesPage: React.FC = () => {
     useEffect(() => { setCurrentPage(1); }, [filters]);
 
     const userVisibleWarehouses = useMemo(() => {
-        if (!user) return [];
-        if (user.role.name.toLowerCase().includes('admin')) return warehouses;
-        return warehouses.filter(wh => user.warehouseIds?.includes(wh.id));
+        try {
+            if (!user || !user.role) return [];
+            // Safe access to role name
+            const roleName = String(user.role.name || '').toLowerCase();
+            if (roleName.includes('admin')) return warehouses;
+            
+            // Safe access to warehouseIds
+            const userWhIds = user.warehouseIds || [];
+            return warehouses.filter(wh => userWhIds.includes(wh.id));
+        } catch (err) {
+            console.error("Error in userVisibleWarehouses:", err);
+            return [];
+        }
     }, [user, warehouses]);
 
     const filteredSales = useMemo(() => {
+        if (!sales) return [];
         return sales.filter(sale => {
-            const userWarehouseIds = userVisibleWarehouses.map(wh => wh.id);
-            if (!userWarehouseIds.includes(sale.warehouseId)) return false;
+            try {
+                if (!sale) return false;
+                
+                const userWarehouseIds = userVisibleWarehouses.map(wh => wh.id);
+                // Handle case where sale has no warehouseId (legacy data?)
+                if (sale.warehouseId && !userWarehouseIds.includes(sale.warehouseId)) return false;
 
-            const searchTermMatch = filters.searchTerm === '' || sale.referenceNumber.toLowerCase().includes(filters.searchTerm.toLowerCase());
-            const customerMatch = filters.customerId === 'all' || sale.customerId === filters.customerId;
-            const warehouseMatch = filters.warehouseId === 'all' || sale.warehouseId === filters.warehouseId;
-            const paymentStatusMatch = filters.paymentStatus === 'all' || sale.paymentStatus === filters.paymentStatus;
-            
-            let dateMatch = true;
-            if (filters.startDate) dateMatch = dateMatch && new Date(sale.date) >= new Date(filters.startDate);
-            if (filters.endDate) dateMatch = dateMatch && new Date(sale.date) <= new Date(filters.endDate);
+                const refNum = sale.referenceNumber ? String(sale.referenceNumber).toLowerCase() : '';
+                const searchTermMatch = filters.searchTerm === '' || refNum.includes(filters.searchTerm.toLowerCase());
+                
+                const customerMatch = filters.customerId === 'all' || sale.customerId === filters.customerId;
+                const warehouseMatch = filters.warehouseId === 'all' || sale.warehouseId === filters.warehouseId;
+                const paymentStatusMatch = filters.paymentStatus === 'all' || sale.paymentStatus === filters.paymentStatus;
+                
+                let dateMatch = true;
+                // Handle date safely
+                if (sale.date) {
+                    const saleDate = new Date(sale.date);
+                    if (filters.startDate) dateMatch = dateMatch && saleDate >= new Date(filters.startDate);
+                    if (filters.endDate) dateMatch = dateMatch && saleDate <= new Date(filters.endDate);
+                } else if (filters.startDate || filters.endDate) {
+                    dateMatch = false; // If date missing but filter active, exclude
+                }
 
-            return searchTermMatch && customerMatch && warehouseMatch && paymentStatusMatch && dateMatch;
+                return searchTermMatch && customerMatch && warehouseMatch && paymentStatusMatch && dateMatch;
+            } catch (err) {
+                console.error("Error filtering sale:", sale, err);
+                return false;
+            }
         });
     }, [sales, filters, userVisibleWarehouses]);
 
@@ -91,7 +151,29 @@ const SalesPage: React.FC = () => {
     
     const totalPages = Math.ceil(filteredSales.length / itemsPerPage);
 
-    const getCustomerName = (id: string) => customers.find(c => c.id === id)?.name || 'Inconnu';
+    const formatDate = (date: any) => {
+        if (!date) return '-';
+        try {
+            if (typeof date.toDate === 'function') return date.toDate().toLocaleDateString('fr-FR');
+            const d = new Date(date);
+            return isNaN(d.getTime()) ? '-' : d.toLocaleDateString('fr-FR');
+        } catch (e) { return '-'; }
+    };
+
+    const formatCurrency = (v: any) => {
+        try {
+            const val = Number(v) || 0;
+            return new Intl.NumberFormat('fr-FR').format(val).replace(/\u202f/g, ' ') + ' FCFA';
+        } catch (e) { return '0 FCFA'; }
+    };
+
+    const getCustomerName = (id: string) => {
+        try {
+            if (!customers || !Array.isArray(customers)) return 'Inconnu';
+            const customer = customers.find(c => c && c.id === id);
+            return customer?.name || 'Inconnu';
+        } catch (e) { return 'Inconnu'; }
+    };
     const handleFilterChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
         const { name, value } = e.target;
         setFilters(prev => ({ ...prev, [name]: value }));
@@ -128,15 +210,22 @@ const SalesPage: React.FC = () => {
         } catch (err: any) { setError(err.message); } finally { setIsProcessing(null); }
     };
 
-    const formatCurrency = (v: number) => new Intl.NumberFormat('fr-FR').format(v).replace(/\u202f/g, ' ') + ' FCFA';
-    const getPaymentBadge = (s: Sale['paymentStatus']) => ({'Payé': 'bg-green-100 text-green-800','Partiel': 'bg-blue-100 text-blue-800','En attente': 'bg-yellow-100 text-yellow-800'}[s] || '');
+
+    const getPaymentBadge = (s: Sale['paymentStatus']) => {
+        const badges: Record<string, string> = {
+            'Payé': 'bg-green-100 text-green-800',
+            'Partiel': 'bg-blue-100 text-blue-800',
+            'En attente': 'bg-yellow-100 text-yellow-800'
+        };
+        return badges[s] || 'bg-gray-100 text-gray-800';
+    };
 
     // Calcul des totaux
-    const totalGlobalAmount = useMemo(() => filteredSales.reduce((sum, s) => sum + s.grandTotal, 0), [filteredSales]);
-    const totalGlobalBalance = useMemo(() => filteredSales.reduce((sum, s) => sum + (s.grandTotal - s.paidAmount), 0), [filteredSales]);
+    const totalGlobalAmount = useMemo(() => filteredSales.reduce((sum, s) => sum + (Number(s.grandTotal) || 0), 0), [filteredSales]);
+    const totalGlobalBalance = useMemo(() => filteredSales.reduce((sum, s) => sum + ((Number(s.grandTotal) || 0) - (Number(s.paidAmount) || 0)), 0), [filteredSales]);
     
-    const totalPageAmount = useMemo(() => paginatedSales.reduce((sum, s) => sum + s.grandTotal, 0), [paginatedSales]);
-    const totalPageBalance = useMemo(() => paginatedSales.reduce((sum, s) => sum + (s.grandTotal - s.paidAmount), 0), [paginatedSales]);
+    const totalPageAmount = useMemo(() => paginatedSales.reduce((sum, s) => sum + (Number(s.grandTotal) || 0), 0), [paginatedSales]);
+    const totalPageBalance = useMemo(() => paginatedSales.reduce((sum, s) => sum + ((Number(s.grandTotal) || 0) - (Number(s.paidAmount) || 0)), 0), [paginatedSales]);
 
     return (
         <div className="pb-10">
@@ -159,10 +248,69 @@ const SalesPage: React.FC = () => {
             <div className="mb-6 bg-white dark:bg-gray-800 p-4 rounded-3xl shadow-xl border dark:border-gray-700">
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                     <input type="text" placeholder="Réf. Vente..." name="searchTerm" value={filters.searchTerm} onChange={handleFilterChange} className="px-3 py-2 border rounded-xl dark:bg-gray-700 dark:border-gray-600 outline-none focus:ring-2 focus:ring-primary-500"/>
-                    <select name="customerId" value={filters.customerId} onChange={handleFilterChange} className="px-3 py-2 border rounded-xl dark:bg-gray-700 dark:border-gray-600 font-bold">
-                        <option value="all">Tous les clients</option>
-                        {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                    </select>
+                    
+                    {/* Customer Autocomplete */}
+                    <div className="relative" ref={customerWrapperRef}>
+                        <div className="relative">
+                            <input
+                                type="text"
+                                placeholder="Filtrer par client..."
+                                value={customerSearch}
+                                onChange={(e) => {
+                                    setCustomerSearch(e.target.value);
+                                    setShowCustomerSuggestions(true);
+                                    if (e.target.value === '') {
+                                        setFilters(prev => ({ ...prev, customerId: 'all' }));
+                                    }
+                                }}
+                                onFocus={() => setShowCustomerSuggestions(true)}
+                                className="w-full px-3 py-2 border rounded-xl dark:bg-gray-700 dark:border-gray-600 outline-none focus:ring-2 focus:ring-primary-500 font-bold"
+                            />
+                            {customerSearch && (
+                                <button
+                                    onClick={() => {
+                                        setFilters(prev => ({ ...prev, customerId: 'all' }));
+                                        setCustomerSearch('');
+                                    }}
+                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-red-500"
+                                >
+                                    <DeleteIcon className="w-4 h-4" />
+                                </button>
+                            )}
+                        </div>
+                        {showCustomerSuggestions && (
+                            <ul className="absolute z-20 w-full mt-1 bg-white dark:bg-gray-800 shadow-xl max-h-60 rounded-xl py-1 border dark:border-gray-700 overflow-auto">
+                                <li
+                                    onClick={() => {
+                                        setFilters(prev => ({ ...prev, customerId: 'all' }));
+                                        setCustomerSearch('');
+                                        setShowCustomerSuggestions(false);
+                                    }}
+                                    className="cursor-pointer px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 text-sm font-bold text-gray-500 italic border-b dark:border-gray-700"
+                                >
+                                    Tous les clients
+                                </li>
+                                {filteredCustomers.length > 0 ? (
+                                    filteredCustomers.map(c => (
+                                        <li
+                                            key={c.id}
+                                            onClick={() => {
+                                                setFilters(prev => ({ ...prev, customerId: c.id }));
+                                                setCustomerSearch(c.name);
+                                                setShowCustomerSuggestions(false);
+                                            }}
+                                            className="cursor-pointer px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 text-sm font-bold text-gray-800 dark:text-gray-200"
+                                        >
+                                            {c.name}
+                                        </li>
+                                    ))
+                                ) : (
+                                    <li className="px-4 py-2 text-sm text-gray-400 italic">Aucun client trouvé</li>
+                                )}
+                            </ul>
+                        )}
+                    </div>
+
                     <select name="warehouseId" value={filters.warehouseId} onChange={handleFilterChange} className="px-3 py-2 border rounded-xl dark:bg-gray-700 dark:border-gray-600 font-bold">
                         <option value="all">Tous les entrepôts</option>
                         {userVisibleWarehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
@@ -196,12 +344,12 @@ const SalesPage: React.FC = () => {
                             <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
                                 {paginatedSales.map(sale => (
                                     <tr key={sale.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
-                                        <td className="px-6 py-4 text-sm font-bold text-gray-900 dark:text-white uppercase tracking-tighter">{sale.referenceNumber}</td>
-                                        <td className="px-6 py-4 text-sm text-gray-600 dark:text-gray-300 font-medium uppercase truncate max-w-[150px]">{getCustomerName(sale.customerId)}</td>
-                                        <td className="px-6 py-4 text-xs font-bold">{new Date(sale.date).toLocaleDateString('fr-FR')}</td>
-                                        <td className="px-6 py-4 text-sm font-black">{formatCurrency(sale.grandTotal)}</td>
-                                        <td className="px-6 py-4 text-sm font-black text-red-600">{formatCurrency(sale.grandTotal - sale.paidAmount)}</td>
-                                        <td className="px-6 py-4 text-center">
+                                        <td className="px-6 py-4 text-sm font-bold text-gray-900 dark:text-white uppercase tracking-tighter">{sale.referenceNumber || '-'}</td>
+                                    <td className="px-6 py-4 text-sm text-gray-600 dark:text-gray-300 font-medium uppercase truncate max-w-[150px]">{getCustomerName(sale.customerId)}</td>
+                                    <td className="px-6 py-4 text-xs font-bold">{formatDate(sale.date)}</td>
+                                    <td className="px-6 py-4 text-sm font-black">{formatCurrency(sale.grandTotal)}</td>
+                                    <td className="px-6 py-4 text-sm font-black text-red-600">{formatCurrency(Number(sale.grandTotal || 0) - Number(sale.paidAmount || 0))}</td>
+                                    <td className="px-6 py-4 text-center">
                                             <span className={`px-3 py-1 text-[9px] font-black rounded-full uppercase ${getPaymentBadge(sale.paymentStatus)}`}>
                                                 {sale.paymentStatus}
                                             </span>
