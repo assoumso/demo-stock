@@ -578,6 +578,12 @@ const formatCurrency = (v: number) => new Intl.NumberFormat('fr-FR').format(v).r
                 </div>
                 <div className="flex gap-3">
                     <button 
+                        onClick={() => navigate('/credit-notes/new', { state: { preselectedCustomerId: id } })}
+                        className="flex items-center px-6 py-3 bg-purple-600 text-white rounded-2xl font-black text-sm uppercase tracking-widest shadow-xl hover:bg-purple-700 transition-all"
+                    >
+                        <TrendingUpIcon className="w-5 h-5 mr-2" /> Nouvel Avoir
+                    </button>
+                    <button 
                         onClick={() => setIsPaymentModalOpen(true)}
                         className="flex items-center px-6 py-3 bg-green-600 text-white rounded-2xl font-black text-sm uppercase tracking-widest shadow-xl hover:bg-green-700 transition-all"
                     >

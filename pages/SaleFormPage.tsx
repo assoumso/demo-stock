@@ -44,7 +44,9 @@ const SaleFormPage: React.FC = () => {
     const [productSearch, setProductSearch] = useState('');
     const [customerSearchTerm, setCustomerSearchTerm] = useState('');
     const [customerBalance, setCustomerBalance] = useState(0);
+    const [customerCredit, setCustomerCredit] = useState(0);
     const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+    const [paymentMethod, setPaymentMethod] = useState<'Espèces' | 'Mobile Money' | 'Virement bancaire' | 'Compte Avoir'>('Espèces');
     const [stockErrorModalOpen, setStockErrorModalOpen] = useState(false);
     const [stockErrorMessage, setStockErrorMessage] = useState('');
 
@@ -79,6 +81,7 @@ const SaleFormPage: React.FC = () => {
                         if (cust) {
                             setCustomerSearchTerm(cust.name);
                             setSelectedCustomer(cust);
+                            setCustomerCredit(cust.creditBalance || 0);
                         }
                     } else {
                         setError("Vente non trouvée.");
@@ -105,10 +108,12 @@ const SaleFormPage: React.FC = () => {
         const fetchBalance = async () => {
             if (!formState.customerId) {
                 setCustomerBalance(0);
+                setCustomerCredit(0);
                 return;
             }
             try {
                 const cust = customers.find(c => c.id === formState.customerId);
+                setCustomerCredit(cust?.creditBalance || 0);
                 let openingBalance = cust?.openingBalance || 0;
 
                 // Récupérer les paiements sur le solde d'ouverture
@@ -288,16 +293,46 @@ const SaleFormPage: React.FC = () => {
                     transaction.update(update.ref, { stockLevels: update.newStockLevels });
                 });
 
+                // Gestion du paiement avec crédit client
                 if (!isEditing && finalSaleData.paidAmount > 0 && user) {
-                    const paymentRef = doc(collection(db, "salePayments"));
-                    transaction.set(paymentRef, {
-                        saleId: saleRef.id,
-                        date: new Date().toISOString(),
-                        amount: finalSaleData.paidAmount,
-                        method: 'Espèces',
-                        createdByUserId: user.uid,
-                        note: 'Paiement initial à la vente'
-                    });
+                    const customerRef = doc(db, "customers", finalSaleData.customerId);
+                    const customerSnap = await transaction.get(customerRef);
+                    let currentCredit = 0;
+                    
+                    if (customerSnap.exists()) {
+                        const customerData = customerSnap.data() as Customer;
+                        currentCredit = customerData.creditBalance || 0;
+                    }
+
+                    let paymentAmount = finalSaleData.paidAmount;
+                    let finalPaymentMethod = paymentMethod || 'Espèces';
+                    let usedCredit = 0;
+
+                    // Si paiement par crédit et crédit disponible
+                    if (finalPaymentMethod === 'Compte Avoir' && currentCredit > 0) {
+                        if (paymentAmount > currentCredit) {
+                            throw new Error(`Crédit insuffisant. Disponible: ${formatCurrency(currentCredit)}`);
+                        }
+                        usedCredit = paymentAmount;
+                        currentCredit -= usedCredit;
+                    }
+
+                    if (paymentAmount > 0) {
+                        const paymentRef = doc(collection(db, "salePayments"));
+                        transaction.set(paymentRef, {
+                            saleId: saleRef.id,
+                            date: new Date().toISOString(),
+                            amount: paymentAmount,
+                            method: finalPaymentMethod,
+                            createdByUserId: user.uid,
+                            note: 'Paiement initial à la vente'
+                        });
+                    }
+
+                    // Mise à jour du crédit client si utilisé
+                    if (usedCredit > 0) {
+                        transaction.update(customerRef, { creditBalance: currentCredit });
+                    }
                 } else if (isEditing && originalSale && finalSaleData.paidAmount !== originalSale.paidAmount && user) {
                     const diff = finalSaleData.paidAmount - originalSale.paidAmount;
                     if (diff !== 0) {
@@ -305,7 +340,7 @@ const SaleFormPage: React.FC = () => {
                             saleId: saleRef.id,
                             date: new Date().toISOString(),
                             amount: diff,
-                            method: 'Autre',
+                            method: paymentMethod,
                             createdByUserId: user.uid,
                             note: 'Ajustement manuel du montant payé sur facture'
                         });
@@ -444,16 +479,50 @@ const SaleFormPage: React.FC = () => {
                     <div className="md:col-span-2 space-y-4">
                         <div><label className="block text-xs font-black uppercase tracking-widest text-gray-400">Statut de la vente</label><select name="saleStatus" value={formState.saleStatus} onChange={handleFormChange} className={inputFormClasses}><option>En attente</option><option>Complétée</option></select></div>
                         <div><label className="block text-xs font-black uppercase tracking-widest text-green-600">Montant versé (Acompte)</label><input type="number" name="paidAmount" value={formState.paidAmount || ''} onChange={handleFormChange} className={`${inputFormClasses} border-green-200 text-green-700 font-bold`}/></div>
+                        {formState.paidAmount > 0 && (
+                            <div>
+                                <label className="block text-xs font-black uppercase tracking-widest text-gray-400">Méthode de paiement</label>
+                                <select 
+                                    value={paymentMethod} 
+                                    onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
+                                    className={inputFormClasses}
+                                    disabled={!formState.customerId}
+                                >
+                                    <option value="Espèces">Espèces</option>
+                                    <option value="Mobile Money">Mobile Money</option>
+                                    <option value="Virement bancaire">Virement bancaire</option>
+                                    <option value="Autre">Autre</option>
+                                    {customerCredit > 0 && (
+                                        <option value="Compte Avoir">Compte Avoir (Dispo: {formatCurrency(customerCredit)})</option>
+                                    )}
+                                </select>
+                                {paymentMethod === 'Compte Avoir' && formState.paidAmount > customerCredit && (
+                                    <p className="text-xs text-red-600 mt-1">⚠️ Crédit insuffisant</p>
+                                )}
+                            </div>
+                        )}
                         <div>
                             <label className="block text-xs font-black uppercase tracking-widest text-gray-400">Note / Observation</label>
                             <textarea name="notes" rows={3} value={formState.notes || ''} onChange={handleFormChange} className={inputFormClasses} placeholder="Observations, détails supplémentaires..."></textarea>
                         </div>
                     </div>
                     <div className="space-y-4 bg-gray-50 dark:bg-gray-900/30 p-4 rounded-2xl border dark:border-gray-700">
+                        {customerCredit > 0 && (
+                            <div className="bg-yellow-50 dark:bg-yellow-900/20 p-3 rounded-xl border border-yellow-200 dark:border-yellow-700">
+                                <h3 className="text-xs font-black text-yellow-600 uppercase tracking-widest">Crédit Disponible</h3>
+                                <p className="text-xl font-black text-yellow-600 mt-1">{formatCurrency(customerCredit)}</p>
+                            </div>
+                        )}
                         <div className="pt-2">
                             <h3 className="text-xs font-black text-gray-500 uppercase tracking-widest">Total Général</h3>
                             <p className="text-3xl font-black text-primary-600 mt-1">{formatCurrency(formState.grandTotal)}</p>
                         </div>
+                        {formState.paidAmount > 0 && (
+                            <div className="bg-green-50 dark:bg-green-900/20 p-3 rounded-xl border border-green-200 dark:border-green-700">
+                                <h3 className="text-xs font-black text-green-600 uppercase tracking-widest">Montant Payé</h3>
+                                <p className="text-xl font-black text-green-600 mt-1">{formatCurrency(formState.paidAmount)}</p>
+                            </div>
+                        )}
                     </div>
                 </div>
 

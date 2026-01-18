@@ -32,6 +32,7 @@ const PosPage: React.FC = () => {
 
     // Credit monitoring
     const [customerBalance, setCustomerBalance] = useState(0);
+    const [customerCredit, setCustomerCredit] = useState(0);
 
     // Payment Modal State
     const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
@@ -91,9 +92,14 @@ const PosPage: React.FC = () => {
         const fetchBalance = async () => {
             if (!selectedCustomerId || selectedCustomerId === 'walkin') {
                 setCustomerBalance(0);
+                setCustomerCredit(0);
                 return;
             }
             try {
+                // Récupérer le crédit du client
+                const customer = customers.find(c => c.id === selectedCustomerId);
+                setCustomerCredit(customer?.creditBalance || 0);
+
                 const q = query(collection(db, "sales"), where("customerId", "==", selectedCustomerId));
                 const snap = await getDocs(q);
                 let totalUnpaid = 0;
@@ -294,20 +300,44 @@ const PosPage: React.FC = () => {
                 const saleRef = doc(collection(db, "sales"));
                 transaction.set(saleRef, saleData as DocumentData);
 
-                if (amountTendered > 0) {
-                    const pData: any = {
-                        saleId: saleRef.id,
-                        date: new Date().toISOString(),
-                        amount: amountTendered,
-                        method: paymentMethod,
-                        createdByUserId: user.uid
-                    };
-                    if (paymentMethod === 'Mobile Money') {
-                        pData.momoOperator = momoOperator;
-                        pData.momoNumber = momoNumber;
+                // Gestion du paiement avec crédit client
+            if (amountTendered > 0) {
+                let paymentAmount = amountTendered;
+                let finalPaymentMethod = paymentMethod;
+                let usedCredit = 0;
+
+                // Si paiement par crédit, vérifier et déduire du crédit disponible
+                if (paymentMethod === 'Compte Avoir' && selectedCustomerId && selectedCustomerId !== 'walkin') {
+                    const customerRef = doc(db, "customers", selectedCustomerId);
+                    const customerSnap = await transaction.get(customerRef);
+                    
+                    if (customerSnap.exists()) {
+                        const customerData = customerSnap.data() as Customer;
+                        const availableCredit = customerData.creditBalance || 0;
+                        
+                        if (paymentAmount > availableCredit) {
+                            throw new Error(`Crédit insuffisant. Disponible: ${formatCurrency(availableCredit)}`);
+                        }
+                        
+                        usedCredit = paymentAmount;
+                        const newCreditBalance = availableCredit - usedCredit;
+                        transaction.update(customerRef, { creditBalance: newCreditBalance });
                     }
-                    transaction.set(doc(collection(db, "salePayments")), pData);
                 }
+
+                const pData: any = {
+                    saleId: saleRef.id,
+                    date: new Date().toISOString(),
+                    amount: paymentAmount,
+                    method: finalPaymentMethod,
+                    createdByUserId: user.uid
+                };
+                if (finalPaymentMethod === 'Mobile Money') {
+                    pData.momoOperator = momoOperator;
+                    pData.momoNumber = momoNumber;
+                }
+                transaction.set(doc(collection(db, "salePayments")), pData);
+            }
 
                 return saleRef;
             });
@@ -496,8 +526,8 @@ const PosPage: React.FC = () => {
                          <div>
                             <label className="block text-xs font-black uppercase text-gray-400 mb-2">Méthode de paiement</label>
                             <div className="grid grid-cols-2 gap-2">
-                                {['Espèces', 'Mobile Money', 'Virement bancaire', 'Autre'].map(m => (
-                                    <button key={m} type="button" onClick={() => { setPaymentMethod(m as PaymentMethod); if(m !== 'Mobile Money') { setMomoOperator(''); setMomoNumber(''); } }} className={`py-2 text-[10px] font-bold uppercase border-2 rounded-xl ${paymentMethod === m ? 'bg-primary-600 text-white border-primary-600' : 'bg-white dark:bg-gray-700 text-gray-500'}`}>{m}</button>
+                                {['Espèces', 'Mobile Money', 'Virement bancaire', 'Autre', ...(customerCredit > 0 ? ['Compte Avoir'] : [])].map(m => (
+                                    <button key={m} type="button" onClick={() => { setPaymentMethod(m as PaymentMethod); if(m !== 'Mobile Money') { setMomoOperator(''); setMomoNumber(''); } }} className={`py-2 text-[10px] font-bold uppercase border-2 rounded-xl ${paymentMethod === m ? 'bg-primary-600 text-white border-primary-600' : 'bg-white dark:bg-gray-700 text-gray-500'}`}>{m}{m === 'Compte Avoir' && customerCredit > 0 ? ` (${formatCurrency(customerCredit)})` : ''}</button>
                                 ))}
                             </div>
                         </div>
