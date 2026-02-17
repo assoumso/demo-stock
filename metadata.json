@@ -1,0 +1,5 @@
+{
+  "name": "Demo-Stock",
+  "description": "A comprehensive web application to manage sales (POS & orders), multi-warehouse inventory, suppliers, customers, and users with role-based access control. It features financial reporting, warehouse transfers, inventory management, and a responsive design for desktop, tablet, and mobile POS.",
+  "requestFramePermissions": []
+}
