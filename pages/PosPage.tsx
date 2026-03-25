@@ -127,17 +127,28 @@ const PosPage: React.FC = () => {
 
     // Initialize default customer when settings or customers load
     useEffect(() => {
-        if (settings && !selectedCustomerId) {
+        if (settings) {
              const defaultCustomerId = settings.defaultPosCustomerId || 'walkin';
-             setSelectedCustomerId(defaultCustomerId);
-             const defaultCustomer = customers.find(c => c.id === defaultCustomerId);
-             if (defaultCustomer) {
-                 setCustomerSearchTerm(defaultCustomer.name);
-             } else if (defaultCustomerId === 'walkin') {
-                 setCustomerSearchTerm('Client de passage');
+             const isCurrentlyWalkin = selectedCustomerId === 'walkin' || !selectedCustomerId;
+             
+             if (isCurrentlyWalkin) {
+                 // Try to see if "Client de passage" now exists in our DB
+                 const existingPassage = customers.find(c => c.name.toLowerCase().includes('passage'));
+                 if (existingPassage) {
+                     setSelectedCustomerId(existingPassage.id);
+                     setCustomerSearchTerm(existingPassage.name);
+                 } else {
+                     setSelectedCustomerId('walkin');
+                     setCustomerSearchTerm('Client de passage');
+                 }
+             } else {
+                 const currentCustomer = customers.find(c => c.id === selectedCustomerId);
+                 if (currentCustomer) {
+                     setCustomerSearchTerm(currentCustomer.name);
+                 }
              }
         }
-    }, [settings, selectedCustomerId, customers]);
+    }, [settings, customers, selectedCustomerId]);
 
     const activeCustomers = useMemo(() => {
         return customers.filter(c => !c.isArchived);
@@ -396,12 +407,49 @@ const PosPage: React.FC = () => {
 
         setError(null);
 
+        let finalCustomerId = selectedCustomerId;
+
+        // --- PHASE -1 : HANDLE WALK-IN CUSTOMER ---
+        if (selectedCustomerId === 'walkin') {
+            // Check if we already have a "Client de passage" in our local list
+            const existingWalkin = customers.find(c => c.name.toLowerCase().includes('passage'));
+            
+            if (existingWalkin) {
+                finalCustomerId = existingWalkin.id;
+            } else {
+                // If not, create it in the database
+                try {
+                    const newWalkinId = crypto.randomUUID();
+                    const { data: newCust, error: createError } = await supabase
+                        .from('customers')
+                        .insert({
+                            id: newWalkinId,
+                            name: 'Client de passage',
+                            phone: '00000000',
+                            businessName: 'Vente au comptoir'
+                        })
+                        .select()
+                        .single();
+                    
+                    if (createError) throw createError;
+                    finalCustomerId = newCust.id;
+                    // Refresh customers list silently
+                    refreshData(['customers']);
+                } catch (err) {
+                    console.error("Failed to create walk-in customer:", err);
+                    setError("Échec de la création du client par défaut.");
+                    setIsPaymentModalOpen(false);
+                    return;
+                }
+            }
+        }
+
         const saleId = crypto.randomUUID();
         let saleData: any = {
             id: saleId,
             referenceNumber: `${currentSettings.saleInvoicePrefix || 'POS-'}${Date.now()}`,
             date: new Date().toISOString(),
-            customerId: selectedCustomerId,
+            customerId: finalCustomerId,
             warehouseId: selectedWarehouseId,
             items: cart,
             grandTotal: cartTotal,
