@@ -9,7 +9,7 @@ interface StockAdjustmentListPrintProps {
     warehouses: Warehouse[];
 }
 
-export const StockAdjustmentListPrint = React.forwardRef<HTMLDivElement, StockAdjustmentListPrintProps>((props, ref) => {
+const StockAdjustmentListPrint = React.forwardRef<HTMLDivElement, StockAdjustmentListPrintProps>((props, ref) => {
     const { adjustments, settings, products, warehouses } = props;
 
     const getProductName = (id: string) => products.find(p => p.id === id)?.name || 'Produit Inconnu';
@@ -114,3 +114,5 @@ export const StockAdjustmentListPrint = React.forwardRef<HTMLDivElement, StockAd
         </div>
     );
 });
+
+export default StockAdjustmentListPrint;

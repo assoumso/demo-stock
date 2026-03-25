@@ -1,8 +1,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { db } from '../firebase';
-import { collection, deleteDoc, doc, writeBatch, onSnapshot, query, getDocs } from 'firebase/firestore';
+import { supabase } from '../supabase';
 import { Product, AppSettings } from '../types';
 import * as XLSX from 'xlsx';
 import { useAuth } from '../hooks/useAuth';
@@ -13,14 +12,108 @@ import { Pagination } from '../components/Pagination';
 import { PlusIcon, EditIcon, DeleteIcon, DuplicateIcon, ImageIcon, EyeIcon, WarehouseIcon, TrendingUpIcon, SearchIcon, UploadIcon, DownloadIcon, PrintIcon } from '../constants';
 import DropdownMenu, { DropdownMenuItem } from '../components/DropdownMenu';
 import { formatCurrency } from '../utils/formatters';
+import * as ReactWindow from 'react-window';
+import { AutoSizer } from 'react-virtualized-auto-sizer';
+
+const List = (ReactWindow as any).FixedSizeList;
+const AutoSizerAny = AutoSizer as any;
+
+interface ProductRowData {
+    items: Product[];
+    functions: {
+        selectedIds: string[];
+        setSelectedIds: React.Dispatch<React.SetStateAction<string[]>>;
+        getCategoryName: (id?: string) => string;
+        formatCurrency: (amount: number) => string;
+        getDisplayStock: (product: Product) => number;
+        setProductToPreview: (product: Product | null) => void;
+        setIsPreviewModalOpen: (isOpen: boolean) => void;
+        navigate: (path: string) => void;
+        hasPermission: (permission: string) => boolean;
+        setProductToDelete: (product: Product | null) => void;
+        setIsDeleteModalOpen: (isOpen: boolean) => void;
+    };
+}
+
+interface ProductRowProps {
+    index: number;
+    style: React.CSSProperties;
+    data: ProductRowData;
+}
+
+const ProductRow = ({ index, style, data }: ProductRowProps) => {
+    const { items, functions } = data;
+    const product = items[index];
+    const { 
+        selectedIds, 
+        setSelectedIds, 
+        getCategoryName, 
+        formatCurrency, 
+        getDisplayStock, 
+        setProductToPreview, 
+        setIsPreviewModalOpen, 
+        navigate, 
+        hasPermission, 
+        setProductToDelete, 
+        setIsDeleteModalOpen 
+    } = functions;
+
+    const isSelected = selectedIds.includes(product.id);
+    const toggleSelection = () => {
+        if (isSelected) {
+            setSelectedIds((prev: string[]) => prev.filter(id => id !== product.id));
+        } else {
+            setSelectedIds((prev: string[]) => [...prev, product.id]);
+        }
+    };
+
+    return (
+        <div style={style} className={`flex items-center border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors text-sm ${index % 2 === 0 ? 'bg-white dark:bg-gray-800' : 'bg-gray-50/50 dark:bg-gray-800/50'} ${isSelected ? 'bg-primary-50 dark:bg-primary-900/10' : ''}`}>
+             <div className="w-[5%] px-4 flex justify-center">
+                 <input type="checkbox" checked={isSelected} onChange={toggleSelection} className="h-4 w-4 text-primary-600 rounded cursor-pointer"/>
+            </div>
+            <div className="w-[10%] px-4">
+                <div className="w-10 h-10 bg-gray-50 dark:bg-gray-900 rounded-xl overflow-hidden border dark:border-gray-700 flex items-center justify-center">
+                    {product.imageUrl ? <img className="w-full h-full object-cover" src={product.imageUrl} alt="" /> : <ImageIcon className="w-5 h-5 text-gray-300" />}
+                </div>
+            </div>
+            <div className="w-[25%] px-4">
+                <div className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-tighter truncate" title={product.name}>{product.name}</div>
+                <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest">{product.sku}</div>
+            </div>
+            <div className="w-[15%] px-4 text-xs font-black text-primary-600 uppercase truncate">
+                {getCategoryName(product.categoryId)}
+            </div>
+            <div className="w-[15%] px-4 text-right">
+                <div className="font-black text-primary-600" title="Prix Revendeur">{formatCurrency(product.price)}</div>
+                <div className="text-[10px] font-bold text-blue-600" title="Prix Grossiste">G: {formatCurrency(product.wholesalePrice || 0)}</div>
+                <div className="text-[10px] font-bold text-gray-500" title="Coût d'achat">C: {formatCurrency(product.cost || 0)}</div>
+            </div>
+            <div className="w-[10%] px-4 text-right">
+                {product.type === 'service' ? <span className="text-[10px] text-gray-300 font-black italic">Service</span> : (
+                    <div className={`inline-flex px-3 py-1 rounded-xl font-black text-sm ${getDisplayStock(product) <= product.minStockAlert ? 'bg-red-50 text-red-600' : 'bg-gray-50 text-gray-700'}`}>
+                        {getDisplayStock(product)}
+                    </div>
+                )}
+            </div>
+            <div className="w-[20%] px-4 text-right flex justify-end">
+                <DropdownMenu>
+                    <DropdownMenuItem onClick={() => { setProductToPreview(product); setIsPreviewModalOpen(true); }}><EyeIcon className="w-4 h-4 mr-3 text-blue-500" /> Fiche</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => navigate(`/products/history/${product.id}`)}><TrendingUpIcon className="w-4 h-4 mr-3 text-purple-500" /> Historique Stock</DropdownMenuItem>
+                    {hasPermission('products:edit') && <DropdownMenuItem onClick={() => navigate(`/products/edit/${product.id}`)}><EditIcon className="w-4 h-4 mr-3" /> Modifier</DropdownMenuItem>}
+                    {hasPermission('products:delete') && <DropdownMenuItem onClick={() => { setProductToDelete(product); setIsDeleteModalOpen(true); }} className="text-red-600 font-bold"><DeleteIcon className="w-4 h-4 mr-3" /> Supprimer</DropdownMenuItem>}
+                </DropdownMenu>
+            </div>
+        </div>
+    );
+};
 
 const ProductsPage: React.FC = () => {
     const { hasPermission } = useAuth();
-    const { categories, brands, units, warehouses, suppliers, products } = useData(); // Données instantanées (products added)
+    const { categories, brands, units, warehouses, suppliers, products, refreshData, productsLoading, settings } = useData(); // Données instantanées (products added)
     const navigate = useNavigate();
 
     // Removed local products state and useEffect fetch
-    const [loading, setLoading] = useState(false); // Can be linked to useData loading if desired, but we want instant display if available
     const [error, setError] = useState<string | null>(null);
     
     const [searchTerm, setSearchTerm] = useState('');
@@ -54,7 +147,7 @@ const ProductsPage: React.FC = () => {
     };
 
     // Settings
-    const [settings, setSettings] = useState<any>(null);
+    // const [settings, setSettings] = useState<any>(null); // Removed local state
 
     const [currentPage, setCurrentPage] = useState(1);
     const ITEMS_PER_PAGE = 10;
@@ -63,28 +156,9 @@ const ProductsPage: React.FC = () => {
     
     useEffect(() => { setCurrentPage(1); }, [searchTerm, selectedCategory, selectedBrand, selectedWarehouse, selectedSupplier]);
 
-    // Fetch settings for print
-    useEffect(() => {
-        const fetchSettings = async () => {
-            try {
-                const settingsSnap = await getDocs(collection(db, "appSettings"));
-                if (!settingsSnap.empty) {
-                    setSettings({ id: settingsSnap.docs[0].id, ...settingsSnap.docs[0].data() } as AppSettings);
-                }
-            } catch (error) {
-                console.error('Error fetching settings:', error);
-            }
-        };
-        fetchSettings();
-    }, []);
-
+    // Fetch settings for print - Removed as it is now coming from useData
+    
     const filteredProducts = useMemo(() => {
-        console.log('Filtering products...');
-        console.log('Search Term:', searchTerm);
-        console.log('Selected Category:', selectedCategory);
-        console.log('Selected Brand:', selectedBrand);
-        console.log('Selected Warehouse:', selectedWarehouse);
-        console.log('Selected Supplier:', selectedSupplier);
         const filtered = products.filter(product => {
             const term = searchTerm.toLowerCase();
             const categoryMatch = selectedCategory === 'all' || product.categoryId === selectedCategory;
@@ -94,17 +168,8 @@ const ProductsPage: React.FC = () => {
             const warehouseMatch = selectedWarehouse === 'all' 
                 || (product.stockLevels && product.stockLevels.some(sl => sl.warehouseId === selectedWarehouse));
 
-            console.log(`Product: ${product.name}, SKU: ${product.sku}`);
-            console.log(`  Category Match: ${categoryMatch} (Selected: ${selectedCategory}, Product: ${product.categoryId})`);
-            console.log(`  Brand Match: ${brandMatch} (Selected: ${selectedBrand}, Product: ${product.brandId})`);
-            console.log(`  Supplier Match: ${supplierMatch} (Selected: ${selectedSupplier}, Product: ${product.supplierId})`);
-            console.log(`  Search Match: ${searchMatch} (Term: ${term}, Product Name: ${product.name}, SKU: ${product.sku})`);
-            console.log(`  Warehouse Match: ${warehouseMatch} (Selected: ${selectedWarehouse}, Product Stock Levels: ${JSON.stringify(product.stockLevels)})`);
-            console.log(`  Overall Match: ${categoryMatch && brandMatch && supplierMatch && searchMatch && warehouseMatch}`);
-
             return categoryMatch && brandMatch && supplierMatch && searchMatch && warehouseMatch;
         });
-        console.log('Filtered Products Count:', filtered.length);
         return filtered;
     }, [products, searchTerm, selectedCategory, selectedBrand, selectedWarehouse, selectedSupplier]);
 
@@ -145,19 +210,27 @@ const ProductsPage: React.FC = () => {
     const handleDeleteProduct = async () => {
         if (!productToDelete) return;
         try {
-            await deleteDoc(doc(db, "products", productToDelete.id));
+            const { error } = await supabase.from('products').delete().eq('id', productToDelete.id);
+            if (error) throw error;
+            await refreshData();
             setIsDeleteModalOpen(false);
-        } catch (err) { setError("Erreur lors de la suppression."); }
+        } catch (err) { 
+            console.error(err);
+            setError("Erreur lors de la suppression."); 
+        }
     };
 
     const handleBulkDelete = async () => {
         try {
-            const batch = writeBatch(db);
-            selectedIds.forEach(id => batch.delete(doc(db, "products", id)));
-            await batch.commit();
+            const { error } = await supabase.from('products').delete().in('id', selectedIds);
+            if (error) throw error;
+            await refreshData();
             setSelectedIds([]);
             setIsBulkDeleteModalOpen(false);
-        } catch (err) { setError("Erreur lors de la suppression groupée."); }
+        } catch (err) { 
+            console.error(err);
+            setError("Erreur lors de la suppression groupée."); 
+        }
     };
 
     const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -181,8 +254,8 @@ const ProductsPage: React.FC = () => {
                     return;
                 }
 
-                // Batch write to Firestore (max 500 ops per batch)
-                const batchSize = 450;
+                // Batch write to Firestore
+                const batchSize = 100;
                 const chunks = [];
                 for (let i = 0; i < data.length; i += batchSize) {
                     chunks.push(data.slice(i, i + batchSize));
@@ -191,48 +264,51 @@ const ProductsPage: React.FC = () => {
                 let importedCount = 0;
 
                 for (const chunk of chunks) {
-                    const batch = writeBatch(db);
-                    chunk.forEach((row: any) => {
-                        // Skip example row if it looks like the template example
-                        if (row['Nom'] === 'Exemple Produit' && row['SKU'] === 'REF-001') return;
+                    const productsToInsert = chunk.map((row: any) => {
+                        if (row['Nom'] === 'Exemple Produit' && row['SKU'] === 'REF-001') return null;
+                        
+                        const newId = crypto.randomUUID();
+                        const rawSku = String(row['SKU'] || row['sku'] || '').trim();
+                        const finalSku = rawSku ? rawSku : `SKU-${newId.split('-')[0].toUpperCase()}`;
 
-                        const newDocRef = doc(collection(db, "products"));
                         const productData: any = {
-                            id: newDocRef.id,
+                            id: newId,
                             name: row['Nom'] || row['name'] || 'Produit sans nom',
-                            sku: String(row['SKU'] || row['sku'] || newDocRef.id).trim(),
+                            sku: finalSku,
                             type: (row['Type'] || row['type'] || 'product').toLowerCase(),
-                            categoryId: row['Categorie ID'] || row['categoryId'] || '', 
-                            brandId: row['Marque ID'] || row['brandId'] || '',
+                            categoryId: row['Categorie ID'] || row['categoryId'] || null, 
+                            brandId: row['Marque ID'] || row['brandId'] || null,
                             description: row['Description'] || row['description'] || '',
                             cost: Number(row['Cout'] || row['cost'] || 0),
-                            price: Number(row['Prix'] || row['price'] || 0),
+                            price: Number(row['Prix Revendeur'] || row['Prix'] || row['price'] || 0),
+                            wholesalePrice: Number(row['Prix Grossiste'] || row['wholesalePrice'] || 0),
                             minStockAlert: Number(row['Alerte Stock'] || row['minStockAlert'] || 5),
                             taxRate: Number(row['Taux Taxe'] || row['taxRate'] || 0),
                             taxInclusive: (row['Taxe Incluse'] && String(row['Taxe Incluse']).toLowerCase() === 'oui') || row['taxInclusive'] === true,
                             stockLevels: []
                         };
                         
-                        // Initial stock handling if provided
                         const initialQty = Number(row['Quantite'] || row['quantity'] || 0);
                         if (initialQty > 0 && warehouses.length > 0) {
-                             // Default to first warehouse if not specified
                             productData.stockLevels = [{
                                 warehouseId: warehouses[0].id,
                                 quantity: initialQty
                             }];
                         }
+                        return productData;
+                    }).filter(p => p !== null);
 
-                        batch.set(newDocRef, productData);
-                        importedCount++;
-                    });
-                    await batch.commit();
+                    if (productsToInsert.length > 0) {
+                        const { error: insError } = await supabase.from('products').insert(productsToInsert);
+                        if (insError) throw insError;
+                        importedCount += productsToInsert.length;
+                    }
                     
-                    // Update progress based on total processed so far
                     const progress = Math.round((importedCount / data.length) * 100);
                     setImportProgress(progress);
                 }
 
+                await refreshData();
                 alert(`${importedCount} produits importés avec succès !`);
 
             } catch (err) {
@@ -253,7 +329,8 @@ const ProductsPage: React.FC = () => {
                 'Nom': 'Exemple Produit',
                 'SKU': 'REF-001',
                 'Type': 'product',
-                'Prix': 15000,
+                'Prix Revendeur': 15000,
+                'Prix Grossiste': 12000,
                 'Cout': 10000,
                 'Quantite': 50,
                 'Alerte Stock': 5,
@@ -270,7 +347,8 @@ const ProductsPage: React.FC = () => {
             {wch: 30}, // Nom
             {wch: 15}, // SKU
             {wch: 10}, // Type
-            {wch: 10}, // Prix
+            {wch: 15}, // Prix Revendeur
+            {wch: 15}, // Prix Grossiste
             {wch: 10}, // Cout
             {wch: 10}, // Quantite
             {wch: 12}, // Alerte Stock
@@ -284,6 +362,55 @@ const ProductsPage: React.FC = () => {
         XLSX.utils.book_append_sheet(wb, ws, "Modele");
         XLSX.writeFile(wb, "modele_import_produits.xlsx");
     };
+
+    const handleExportExcel = () => {
+        const wsData = filteredProducts.map(p => ({
+            'Nom': p.name,
+            'SKU': p.sku,
+            'Catégorie': getCategoryName(p.categoryId),
+            'Marque': getBrandName(p.brandId),
+            'Fournisseur': suppliers.find(s => s.id === p.supplierId)?.name || '',
+            'Prix Revendeur': p.price,
+            'Prix Grossiste': p.wholesalePrice || 0,
+            'Coût': p.cost || 0,
+            'Stock Global': getDisplayStock(p)
+        }));
+        
+        const ws = XLSX.utils.json_to_sheet(wsData);
+        const wscols = [
+            {wch: 30},
+            {wch: 15},
+            {wch: 20},
+            {wch: 15},
+            {wch: 20},
+            {wch: 15},
+            {wch: 15},
+            {wch: 15},
+            {wch: 12}
+        ];
+        ws['!cols'] = wscols;
+
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Produits");
+        XLSX.writeFile(wb, "export_catalogue_produits.xlsx");
+    };
+
+    const itemData = useMemo(() => ({
+        items: filteredProducts,
+        functions: {
+            selectedIds,
+            setSelectedIds,
+            getCategoryName,
+            formatCurrency,
+            getDisplayStock,
+            setProductToPreview,
+            setIsPreviewModalOpen,
+            navigate,
+            hasPermission,
+            setProductToDelete,
+            setIsDeleteModalOpen
+        }
+    }), [filteredProducts, selectedIds, categories, selectedWarehouse, hasPermission]);
 
     return (
         <div className="pb-10">
@@ -327,6 +454,13 @@ const ProductsPage: React.FC = () => {
                         </button>
                     )}
                     <button 
+                        onClick={handleExportExcel} 
+                        className="px-4 py-2 bg-green-600 text-white rounded-xl hover:bg-green-700 font-bold uppercase text-xs shadow-lg flex items-center justify-center transition-all hover:scale-105"
+                        title="Exporter la liste en Excel"
+                    >
+                        <DownloadIcon className="w-4 h-4 mr-2" /> Exporter Excel
+                    </button>
+                    <button 
                         onClick={handlePrint} 
                         className="px-4 py-2 bg-gray-900 text-white rounded-xl hover:bg-black font-bold uppercase text-xs shadow-lg flex items-center justify-center transition-all hover:scale-105"
                     >
@@ -351,7 +485,10 @@ const ProductsPage: React.FC = () => {
                             <input 
                                 type="checkbox" 
                                 checked={showAll} 
-                                onChange={(e) => setShowAll(e.target.checked)} 
+                                onChange={(e) => {
+                                    setShowAll(e.target.checked);
+                                    if (e.target.checked) setCurrentPage(1);
+                                }} 
                                 className="form-checkbox h-5 w-5 text-primary-600 rounded focus:ring-primary-500 border-gray-300" 
                             />
                             <span className="text-sm font-bold text-gray-700 dark:text-gray-300 uppercase select-none">Tout Afficher</span>
@@ -376,78 +513,120 @@ const ProductsPage: React.FC = () => {
                 </div>
             </div>
 
-            {loading ? (
-                <div className="p-24 text-center text-gray-400 font-black uppercase tracking-widest animate-pulse">Synchronisation en cours...</div>
+            {productsLoading ? (
+                <div className="p-24 text-center text-gray-400 font-black uppercase tracking-widest animate-pulse">Synchronisation des produits...</div>
             ) : (
-                <>
-                <div className="bg-white dark:bg-gray-800 shadow-2xl rounded-3xl border border-gray-100 dark:border-gray-700">
-                    <div className="overflow-x-auto max-h-[70vh]">
-                        <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700 relative">
-                            <thead className="bg-primary-600 text-white sticky top-0 z-10">
-                                <tr>
-                                    <th className="px-4 py-4 w-10 text-center"><input type="checkbox" checked={paginatedProducts.length > 0 && selectedIds.length === paginatedProducts.length} onChange={(e) => setSelectedIds(e.target.checked ? paginatedProducts.map(p => p.id) : [])} className="h-4 w-4 rounded cursor-pointer"/></th>
-                                    <th className="px-6 py-4 text-left text-[10px] font-black uppercase">Aperçu</th>
-                                    <th className="px-6 py-4 text-left text-[10px] font-black uppercase">Article</th>
-                                    <th className="px-6 py-4 text-left text-[10px] font-black uppercase">Catégorie</th>
-                                    <th className="px-6 py-4 text-right text-[10px] font-black uppercase">Prix</th>
-                                    <th className="px-6 py-4 text-right text-[10px] font-black uppercase">Stock</th>
-                                    <th className="px-6 py-4 text-right text-[10px] font-black uppercase">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                                {paginatedProducts.map(product => (
-                                    <tr key={product.id} className={`${selectedIds.includes(product.id) ? 'bg-primary-50 dark:bg-primary-900/10' : 'hover:bg-gray-50 dark:hover:bg-gray-700/30'} transition-colors`}>
-                                        <td className="px-4 py-4 text-center">
-                                             <input type="checkbox" checked={selectedIds.includes(product.id)} onChange={() => setSelectedIds(prev => prev.includes(product.id) ? prev.filter(id => id !== product.id) : [...prev, product.id])} className="h-4 w-4 text-primary-600 rounded cursor-pointer"/>
-                                        </td>
-                                        <td className="px-6 py-4">
-                                            <div className="w-12 h-12 bg-gray-50 dark:bg-gray-900 rounded-xl overflow-hidden border dark:border-gray-700 flex items-center justify-center">
-                                                {product.imageUrl ? <img className="w-full h-full object-cover" src={product.imageUrl} alt="" /> : <ImageIcon className="w-6 h-6 text-gray-300" />}
-                                            </div>
-                                        </td>
-                                        <td className="px-6 py-4">
-                                            <div className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-tighter">{product.name}</div>
-                                            <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest">{product.sku}</div>
-                                        </td>
-                                        <td className="px-6 py-4 text-xs font-black text-primary-600 uppercase">{getCategoryName(product.categoryId)}</td>
-                                        <td className="px-6 py-4 text-right font-black">{formatCurrency(product.price)}</td>
-                                        <td className="px-6 py-4 text-right">
-                                            {product.type === 'service' ? <span className="text-[10px] text-gray-300 font-black italic">Service</span> : (
-                                                <div className={`inline-flex px-3 py-1 rounded-xl font-black text-sm ${getDisplayStock(product) <= product.minStockAlert ? 'bg-red-50 text-red-600' : 'bg-gray-50 text-gray-700'}`}>
-                                                    {getDisplayStock(product)}
-                                                </div>
-                                            )}
-                                        </td>
-                                        <td className="px-6 py-4 text-right">
-                                            <DropdownMenu>
-                                                <DropdownMenuItem onClick={() => { setProductToPreview(product); setIsPreviewModalOpen(true); }}><EyeIcon className="w-4 h-4 mr-3 text-blue-500" /> Fiche</DropdownMenuItem>
-                                                <DropdownMenuItem onClick={() => navigate(`/products/history/${product.id}`)}><TrendingUpIcon className="w-4 h-4 mr-3 text-purple-500" /> Historique Stock</DropdownMenuItem>
-                                                {hasPermission('products:edit') && <DropdownMenuItem onClick={() => navigate(`/products/edit/${product.id}`)}><EditIcon className="w-4 h-4 mr-3" /> Modifier</DropdownMenuItem>}
-                                                {hasPermission('products:delete') && <DropdownMenuItem onClick={() => { setProductToDelete(product); setIsDeleteModalOpen(true); }} className="text-red-600 font-bold"><DeleteIcon className="w-4 h-4 mr-3" /> Supprimer</DropdownMenuItem>}
-                                            </DropdownMenu>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                            <tfoot className="border-t-2 border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
-                                <tr className="border-b dark:border-gray-700">
-                                    <td colSpan={4} className="px-6 py-3 text-right text-xs font-black uppercase text-gray-500">Total Page</td>
-                                    <td className="px-6 py-3 text-right text-xs font-black text-primary-600">{formatCurrency(totalPageValue)}</td>
-                                    <td className="px-6 py-3 text-right text-xs font-black text-gray-700 dark:text-gray-300">{totalPageStock}</td>
-                                    <td></td>
-                                </tr>
-                                <tr>
-                                    <td colSpan={4} className="px-6 py-3 text-right text-xs font-black uppercase text-primary-600">Total Global</td>
-                                    <td className="px-6 py-3 text-right text-xs font-black text-primary-600">{formatCurrency(totalGlobalValue)}</td>
-                                    <td className="px-6 py-3 text-right text-xs font-black text-gray-900 dark:text-white">{totalGlobalStock}</td>
-                                    <td></td>
-                                </tr>
-                            </tfoot>
-                        </table>
+                showAll ? (
+                    <div className="bg-white dark:bg-gray-800 shadow-2xl rounded-3xl border border-gray-100 dark:border-gray-700 h-[75vh] flex flex-col">
+                         <div className="flex items-center bg-primary-600 text-white px-0 py-4 font-black uppercase text-[10px] tracking-wider sticky top-0 z-10">
+                            <div className="w-[5%] px-4 text-center">
+                                <input type="checkbox" checked={filteredProducts.length > 0 && selectedIds.length === filteredProducts.length} onChange={(e) => setSelectedIds(e.target.checked ? filteredProducts.map(p => p.id) : [])} className="h-4 w-4 rounded cursor-pointer"/>
+                            </div>
+                            <div className="w-[10%] px-4 text-left">Aperçu</div>
+                            <div className="w-[25%] px-4 text-left">Article</div>
+                            <div className="w-[15%] px-4 text-left">Catégorie</div>
+                            <div className="w-[15%] px-4 text-right">Prix (R/G/C)</div>
+                            <div className="w-[10%] px-4 text-right">Stock</div>
+                            <div className="w-[20%] px-4 text-right">Actions</div>
+                        </div>
+                        <div className="flex-1">
+                            <AutoSizerAny>
+                                {({ height, width }: any) => (
+                                <List
+                                    className="scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600"
+                                    height={height}
+                                    width={width}
+                                    itemCount={filteredProducts.length}
+                                    itemSize={80}
+                                    itemData={itemData}
+                                    itemKey={(index, data) => data.items[index].id}
+                                    overscanCount={5}
+                                >
+                                    {ProductRow}
+                                </List>
+                                )}
+                            </AutoSizerAny>
+                        </div>
+                         <div className="bg-gray-50 dark:bg-gray-900 border-t-2 border-gray-200 dark:border-gray-700 p-4 flex justify-end space-x-8">
+                            <div className="text-right text-xs font-black uppercase text-primary-600">Total Global: <span className="ml-2 text-primary-600">{formatCurrency(totalGlobalValue)}</span></div>
+                            <div className="text-right text-xs font-black uppercase text-gray-900 dark:text-white">Stock Global: <span className="ml-2">{totalGlobalStock}</span></div>
+                        </div>
                     </div>
-                </div>
-                <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} totalItems={filteredProducts.length} itemsPerPage={ITEMS_PER_PAGE} />
-                </>
+                ) : (
+                    <>
+                    <div className="bg-white dark:bg-gray-800 shadow-2xl rounded-3xl border border-gray-100 dark:border-gray-700">
+                        <div className="overflow-x-auto max-h-[70vh]">
+                            <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700 relative">
+                                <thead className="bg-primary-600 text-white sticky top-0 z-10">
+                                    <tr>
+                                        <th className="px-4 py-4 w-10 text-center"><input type="checkbox" checked={paginatedProducts.length > 0 && selectedIds.length === paginatedProducts.length} onChange={(e) => setSelectedIds(e.target.checked ? paginatedProducts.map(p => p.id) : [])} className="h-4 w-4 rounded cursor-pointer"/></th>
+                                        <th className="px-6 py-4 text-left text-[10px] font-black uppercase">Aperçu</th>
+                                        <th className="px-6 py-4 text-left text-[10px] font-black uppercase">Article</th>
+                                        <th className="px-6 py-4 text-left text-[10px] font-black uppercase">Catégorie</th>
+                                        <th className="px-6 py-4 text-right text-[10px] font-black uppercase">Prix (R/G/C)</th>
+                                        <th className="px-6 py-4 text-right text-[10px] font-black uppercase">Stock</th>
+                                        <th className="px-6 py-4 text-right text-[10px] font-black uppercase">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                                    {paginatedProducts.map(product => (
+                                        <tr key={product.id} className={`${selectedIds.includes(product.id) ? 'bg-primary-50 dark:bg-primary-900/10' : 'hover:bg-gray-50 dark:hover:bg-gray-700/30'} transition-colors`}>
+                                            <td className="px-4 py-4 text-center">
+                                                 <input type="checkbox" checked={selectedIds.includes(product.id)} onChange={() => setSelectedIds(prev => prev.includes(product.id) ? prev.filter(id => id !== product.id) : [...prev, product.id])} className="h-4 w-4 text-primary-600 rounded cursor-pointer"/>
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <div className="w-12 h-12 bg-gray-50 dark:bg-gray-900 rounded-xl overflow-hidden border dark:border-gray-700 flex items-center justify-center">
+                                                    {product.imageUrl ? <img className="w-full h-full object-cover" src={product.imageUrl} alt="" /> : <ImageIcon className="w-6 h-6 text-gray-300" />}
+                                                </div>
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <div className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-tighter">{product.name}</div>
+                                                <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest">{product.sku}</div>
+                                            </td>
+                                            <td className="px-6 py-4 text-xs font-black text-primary-600 uppercase">{getCategoryName(product.categoryId)}</td>
+                                            <td className="px-6 py-4 text-right">
+                                                <div className="font-black text-primary-600" title="Prix Revendeur">{formatCurrency(product.price)}</div>
+                                                <div className="text-[10px] font-bold text-blue-600" title="Prix Grossiste">G: {formatCurrency(product.wholesalePrice || 0)}</div>
+                                                <div className="text-[10px] font-bold text-gray-500" title="Coût d'achat">C: {formatCurrency(product.cost || 0)}</div>
+                                            </td>
+                                            <td className="px-6 py-4 text-right">
+                                                {product.type === 'service' ? <span className="text-[10px] text-gray-300 font-black italic">Service</span> : (
+                                                    <div className={`inline-flex px-3 py-1 rounded-xl font-black text-sm ${getDisplayStock(product) <= product.minStockAlert ? 'bg-red-50 text-red-600' : 'bg-gray-50 text-gray-700'}`}>
+                                                        {getDisplayStock(product)}
+                                                    </div>
+                                                )}
+                                            </td>
+                                            <td className="px-6 py-4 text-right">
+                                                <DropdownMenu>
+                                                    <DropdownMenuItem onClick={() => { setProductToPreview(product); setIsPreviewModalOpen(true); }}><EyeIcon className="w-4 h-4 mr-3 text-blue-500" /> Fiche</DropdownMenuItem>
+                                                    <DropdownMenuItem onClick={() => navigate(`/products/history/${product.id}`)}><TrendingUpIcon className="w-4 h-4 mr-3 text-purple-500" /> Historique Stock</DropdownMenuItem>
+                                                    {hasPermission('products:edit') && <DropdownMenuItem onClick={() => navigate(`/products/edit/${product.id}`)}><EditIcon className="w-4 h-4 mr-3" /> Modifier</DropdownMenuItem>}
+                                                    {hasPermission('products:delete') && <DropdownMenuItem onClick={() => { setProductToDelete(product); setIsDeleteModalOpen(true); }} className="text-red-600 font-bold"><DeleteIcon className="w-4 h-4 mr-3" /> Supprimer</DropdownMenuItem>}
+                                                </DropdownMenu>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                                <tfoot className="border-t-2 border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
+                                    <tr className="border-b dark:border-gray-700">
+                                        <td colSpan={4} className="px-6 py-3 text-right text-xs font-black uppercase text-gray-500">Total Page</td>
+                                        <td className="px-6 py-3 text-right text-xs font-black text-primary-600">{formatCurrency(totalPageValue)}</td>
+                                        <td className="px-6 py-3 text-right text-xs font-black text-gray-700 dark:text-gray-300">{totalPageStock}</td>
+                                        <td></td>
+                                    </tr>
+                                    <tr>
+                                        <td colSpan={4} className="px-6 py-3 text-right text-xs font-black uppercase text-primary-600">Total Global</td>
+                                        <td className="px-6 py-3 text-right text-xs font-black text-primary-600">{formatCurrency(totalGlobalValue)}</td>
+                                        <td className="px-6 py-3 text-right text-xs font-black text-gray-900 dark:text-white">{totalGlobalStock}</td>
+                                        <td></td>
+                                    </tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                    </div>
+                    <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} totalItems={filteredProducts.length} itemsPerPage={ITEMS_PER_PAGE} />
+                    </>
+                )
             )}
 
             <Modal isOpen={isDeleteModalOpen} onClose={() => setIsDeleteModalOpen(false)} title="Confirmation">
@@ -511,14 +690,18 @@ const ProductsPage: React.FC = () => {
                                     <p className="text-sm font-bold text-gray-400 uppercase tracking-widest mt-1">SKU: {productToPreview.sku}</p>
                                 </div>
 
-                                <div className="grid grid-cols-2 gap-4">
+                                <div className="grid grid-cols-3 gap-4">
                                     <div className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
-                                        <div className="text-[10px] uppercase font-black text-gray-400 mb-1">Prix de vente</div>
+                                        <div className="text-[10px] uppercase font-black text-gray-400 mb-1">Prix Revendeur</div>
                                         <div className="text-lg font-black text-primary-600">{formatCurrency(productToPreview.price)}</div>
                                     </div>
                                     <div className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+                                        <div className="text-[10px] uppercase font-black text-gray-400 mb-1">Prix Grossiste</div>
+                                        <div className="text-lg font-black text-blue-600">{formatCurrency(productToPreview.wholesalePrice || 0)}</div>
+                                    </div>
+                                    <div className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
                                         <div className="text-[10px] uppercase font-black text-gray-400 mb-1">Coût d'achat</div>
-                                        <div className="text-lg font-black text-gray-700 dark:text-gray-300">{formatCurrency(productToPreview.costPrice || 0)}</div>
+                                        <div className="text-lg font-black text-gray-700 dark:text-gray-300">{formatCurrency(productToPreview.cost || 0)}</div>
                                     </div>
                                 </div>
 

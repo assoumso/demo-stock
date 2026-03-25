@@ -1,19 +1,102 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { db } from '../firebase';
-import { collection, getDocs, doc, deleteDoc, writeBatch } from 'firebase/firestore';
-import { Supplier, Purchase, AppSettings } from '../types';
+import { supabase } from '../supabase';
+import { Supplier, Purchase, AppSettings, Payment } from '../types';
 import { PlusIcon, EditIcon, DeleteIcon, EyeIcon, PrintIcon, SearchIcon } from '../constants';
 import DropdownMenu, { DropdownMenuItem } from '../components/DropdownMenu';
 import { useAuth } from '../hooks/useAuth';
+import { useData } from '../context/DataContext';
 import Modal from '../components/Modal';
+import { Pagination } from '../components/Pagination';
+import * as ReactWindow from 'react-window';
+import { AutoSizer } from 'react-virtualized-auto-sizer';
+
+const List = (ReactWindow as any).FixedSizeList;
+const AutoSizerAny = AutoSizer as any;
 import { useReactToPrint } from 'react-to-print';
 import { SupplierListPrint } from '../components/SupplierListPrint';
 import { formatCurrency } from '../utils/formatters';
 
+interface SupplierRowData {
+    items: Supplier[];
+    functions: {
+        balances: Record<string, number>;
+        selectedIds: string[];
+        handleSelectOne: (id: string) => void;
+        formatCurrency: (amount: number) => string;
+        navigate: (path: string) => void;
+        handleDelete: (id: string) => Promise<void>;
+        hasPermission: (permission: string) => boolean;
+    };
+}
+
+interface SupplierRowProps {
+    index: number;
+    style: React.CSSProperties;
+    data: SupplierRowData;
+}
+
+const SupplierRow = ({ index, style, data }: SupplierRowProps) => {
+    const { items, functions } = data;
+    const item = items[index];
+    const { 
+        balances, 
+        selectedIds, 
+        handleSelectOne, 
+        formatCurrency, 
+        navigate, 
+        handleDelete, 
+        hasPermission 
+    } = functions;
+    
+    const balance = balances[item.id] || 0;
+    const isSelected = selectedIds.includes(item.id);
+
+    return (
+        <div style={style} className={`flex items-center border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors ${isSelected ? 'bg-blue-50 dark:bg-blue-900/20' : ''}`}>
+             <div className="w-[5%] px-4 text-center">
+                <input type="checkbox" checked={isSelected} onChange={() => handleSelectOne(item.id)} className="h-4 w-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500"/>
+             </div>
+             <div className="w-[25%] px-4">
+                <div className="text-sm font-bold text-gray-900 dark:text-white uppercase truncate" title={item.businessName || item.name}>{item.businessName || item.name}</div>
+                {item.businessName && <div className="text-[10px] font-black text-gray-400 uppercase truncate" title={item.name}>{item.name}</div>}
+             </div>
+             <div className="w-[20%] px-4">
+                <div className="truncate text-sm text-gray-500 dark:text-gray-300 font-medium" title={item.phone}>{item.phone}</div>
+                <div className="text-[10px] font-bold text-primary-600 truncate" title={item.email}>{item.email}</div>
+             </div>
+             <div className="w-[15%] px-4">
+                <div className="uppercase text-sm text-gray-500 dark:text-gray-300 font-bold truncate" title={item.rccm || '-'}>{item.rccm || '-'}</div>
+                <div className="text-[10px] uppercase truncate" title={item.nif || '-'}>{item.nif || '-'}</div>
+             </div>
+             <div className="w-[15%] px-4 text-right">
+                <div className={`inline-flex px-3 py-1 rounded-xl ${balance > 0 ? 'bg-red-50 dark:bg-red-900/20 text-red-600' : 'bg-gray-100 dark:bg-gray-700 text-gray-500'}`}>
+                    <span className="text-sm font-black">{formatCurrency(balance)}</span>
+                </div>
+             </div>
+             <div className="w-[20%] px-4 text-right flex justify-end">
+                {hasPermission('suppliers') && (
+                    <DropdownMenu>
+                        <DropdownMenuItem onClick={() => navigate(`/suppliers/account/${item.id}`)}>
+                            <EyeIcon className="w-4 h-4 mr-3 text-blue-500"/> Compte Fournisseur
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => navigate(`/suppliers/edit/${item.id}`)}>
+                            <EditIcon className="w-4 h-4 mr-3"/> Modifier Profil
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => handleDelete(item.id)} className="text-red-600 font-bold">
+                            <DeleteIcon className="w-4 h-4 mr-3"/> Supprimer
+                        </DropdownMenuItem>
+                    </DropdownMenu>
+                )}
+             </div>
+        </div>
+    );
+};
+
 const SuppliersPage: React.FC = () => {
     const { hasPermission } = useAuth();
+    const { suppliers: cachedSuppliers, suppliersLoading } = useData();
     const navigate = useNavigate();
     const [suppliers, setSuppliers] = useState<Supplier[]>([]);
     const [balances, setBalances] = useState<Record<string, number>>({});
@@ -24,6 +107,11 @@ const SuppliersPage: React.FC = () => {
     // Selection State
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
     const [isBulkDeleteModalOpen, setIsBulkDeleteModalOpen] = useState(false);
+    
+    // Pagination & Display Mode
+    const [currentPage, setCurrentPage] = useState(1);
+    const itemsPerPage = 20;
+    const [showAll, setShowAll] = useState(false);
 
     // Filters
     const [searchTerm, setSearchTerm] = useState('');
@@ -36,30 +124,31 @@ const SuppliersPage: React.FC = () => {
     const handlePrint = useReactToPrint({ contentRef: printRef });
 
     const fetchData = async () => {
-        setLoading(true);
+        // Only set loading if we don't have suppliers yet
+        if (suppliers.length === 0) setLoading(true);
         setError(null);
         try {
-            const [suppliersSnap, purchasesSnap, paymentsSnap, settingsSnap] = await Promise.all([
-                getDocs(collection(db, "suppliers")),
-                getDocs(collection(db, "purchases")),
-                getDocs(collection(db, "purchasePayments")),
-                getDocs(collection(db, "appSettings"))
+            const [purchasesRes, paymentsRes, settingsRes] = await Promise.all([
+                supabase.from('purchases').select('*'),
+                supabase.from('purchase_payments').select('*'),
+                supabase.from('app_settings').select('*').eq('id', 'app-config').single()
             ]);
-            
-            if (!settingsSnap.empty) {
-                setSettings({ id: settingsSnap.docs[0].id, ...settingsSnap.docs[0].data() } as AppSettings);
+
+            if (settingsRes.data) {
+                setSettings(settingsRes.data as AppSettings);
             }
 
-            const suppliersData = suppliersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Supplier));
-            const purchasesData = purchasesSnap.docs.map(doc => doc.data() as Purchase);
-            const paymentsData = paymentsSnap.docs.map(doc => doc.data());
+            // Use cached suppliers if available
+            const currentSuppliers = cachedSuppliers.length > 0 ? cachedSuppliers : suppliers;
+            const purchasesData = (purchasesRes.data || []) as Purchase[];
+            const paymentsData = (paymentsRes.data || []) as Payment[];
 
             const balanceMap: Record<string, number> = {};
 
             // Vérification des données problématiques
             const problematicValues: any[] = [];
             
-            suppliersData.forEach(s => {
+            currentSuppliers.forEach(s => {
                 if (typeof s.openingBalance !== 'number' || s.openingBalance > 1000000000) {
                     problematicValues.push({
                         supplier: s.name,
@@ -94,7 +183,7 @@ const SuppliersPage: React.FC = () => {
             }
 
             // 1. Initialiser avec Solde Ouverture
-            suppliersData.forEach(s => {
+            currentSuppliers.forEach(s => {
                 balanceMap[s.id] = Number(s.openingBalance) || 0;
             });
 
@@ -114,7 +203,10 @@ const SuppliersPage: React.FC = () => {
                 const grandTotal = Number(purchase.grandTotal) || 0;
                 const paidAmount = Number(purchase.paidAmount) || 0;
                 const unpaid = grandTotal - paidAmount;
-                balanceMap[purchase.supplierId] = (balanceMap[purchase.supplierId] || 0) + unpaid;
+                // Ensure supplierId exists in balanceMap before adding
+                if (purchase.supplierId) {
+                    balanceMap[purchase.supplierId] = (balanceMap[purchase.supplierId] || 0) + unpaid;
+                }
             });
 
             // 4. Nettoyer négatifs et valeurs extrêmes
@@ -124,16 +216,24 @@ const SuppliersPage: React.FC = () => {
                 }
             });
 
-            setSuppliers(suppliersData);
             setBalances(balanceMap);
         } catch (err) {
+            console.error("Error fetching suppliers data:", err);
             setError("Impossible de charger les fournisseurs.");
         } finally {
             setLoading(false);
         }
     };
 
-    useEffect(() => { fetchData(); }, []);
+    // Update suppliers from cache
+    useEffect(() => {
+        if (cachedSuppliers.length > 0) {
+            setSuppliers(cachedSuppliers);
+        }
+    }, [cachedSuppliers]);
+
+    // Trigger balance fetch
+    useEffect(() => { fetchData(); }, [cachedSuppliers]);
 
     const cities = useMemo(() => {
         const uniqueCities = new Set(suppliers.map(s => s.city).filter(Boolean));
@@ -154,6 +254,15 @@ const SuppliersPage: React.FC = () => {
         });
     }, [suppliers, balances, filterType, searchTerm, selectedCity]);
 
+    const paginatedSuppliers = useMemo(() => {
+        const startIndex = (currentPage - 1) * itemsPerPage;
+        return filteredSuppliers.slice(startIndex, startIndex + itemsPerPage);
+    }, [filteredSuppliers, currentPage, itemsPerPage]);
+
+
+
+    const totalPages = Math.ceil(filteredSuppliers.length / itemsPerPage);
+
     const totalDisplayedDebt = useMemo(() => {
         return filteredSuppliers.reduce((sum, s) => {
             const balance = Number(balances[s.id]) || 0;
@@ -165,18 +274,28 @@ const SuppliersPage: React.FC = () => {
 
     const handleDelete = async (id: string) => {
         if (window.confirm("Supprimer ce fournisseur ?")) {
-            try { await deleteDoc(doc(db, "suppliers", id)); await fetchData(); } 
-            catch (err) { setError("Erreur de suppression."); }
+            try { 
+                const { error } = await supabase.from('suppliers').delete().eq('id', id);
+                if (error) throw error;
+                await fetchData(); 
+            } catch (err: any) { 
+                console.error("Error deleting supplier:", err);
+                setError("Erreur de suppression."); 
+            }
         }
     };
 
     const handleBulkDelete = async () => {
-        const batch = writeBatch(db);
-        selectedIds.forEach(id => batch.delete(doc(db, 'suppliers', id)));
-        await batch.commit();
-        await fetchData();
-        setSelectedIds([]);
-        setIsBulkDeleteModalOpen(false);
+        try {
+            const { error } = await supabase.from('suppliers').delete().in('id', selectedIds);
+            if (error) throw error;
+            await fetchData();
+            setSelectedIds([]);
+            setIsBulkDeleteModalOpen(false);
+        } catch (err: any) {
+            console.error("Error bulk deleting suppliers:", err);
+            setError("Erreur de suppression en masse.");
+        }
     };
 
     const handleSelectOne = (id: string) => {
@@ -190,6 +309,19 @@ const SuppliersPage: React.FC = () => {
             setSelectedIds([]);
         }
     };
+
+    const itemData = useMemo(() => ({
+        items: filteredSuppliers,
+        functions: {
+            balances,
+            selectedIds,
+            handleSelectOne,
+            formatCurrency,
+            navigate,
+            handleDelete,
+            hasPermission
+        }
+    }), [filteredSuppliers, balances, selectedIds, handleSelectOne, formatCurrency, navigate, handleDelete, hasPermission]);
 
     return (
         <div>
@@ -223,6 +355,12 @@ const SuppliersPage: React.FC = () => {
                         <option value="all">Tous les fournisseurs</option>
                         <option value="debt">Dettes à payer</option>
                     </select>
+                    <button 
+                        onClick={() => { setShowAll(!showAll); if (!showAll) setCurrentPage(1); }} 
+                        className={`px-4 py-2 rounded-xl font-bold uppercase text-xs shadow-lg transition-all hover:scale-105 ${showAll ? 'bg-primary-600 text-white' : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-600'}`}
+                    >
+                        {showAll ? 'Vue Paginée' : 'Tout afficher'}
+                    </button>
                     <button onClick={() => setIsPrintModalOpen(true)} className="px-4 py-2 bg-gray-900 text-white rounded-xl hover:bg-black font-bold uppercase text-xs shadow-lg flex items-center justify-center transition-all hover:scale-105">
                         <PrintIcon className="w-4 h-4 mr-2" /> Imprimer
                     </button>
@@ -230,6 +368,45 @@ const SuppliersPage: React.FC = () => {
             </div>
 
             {loading ? <p>Chargement...</p> : (
+            <>
+            {showAll ? (
+                <div className="bg-white dark:bg-gray-800 shadow-2xl rounded-3xl border border-gray-100 dark:border-gray-700 h-[75vh] flex flex-col">
+                    <div className="flex items-center bg-primary-600 text-white px-0 py-4 font-black uppercase text-[10px] tracking-wider sticky top-0 z-10">
+                        <div className="w-[5%] px-4 text-center">
+                            <input type="checkbox" checked={filteredSuppliers.length > 0 && selectedIds.length === filteredSuppliers.length} onChange={handleSelectAll} className="h-4 w-4 rounded cursor-pointer"/>
+                        </div>
+                        <div className="w-[25%] px-4">Identité / Entreprise</div>
+                        <div className="w-[20%] px-4">Contact</div>
+                        <div className="w-[15%] px-4">RCCM / NIF</div>
+                        <div className="w-[15%] px-4 text-right">Solde (Dette)</div>
+                        <div className="w-[20%] px-4 text-right">Actions</div>
+                    </div>
+                    <div className="flex-1">
+                        <AutoSizerAny>
+                            {({ height, width }: { height: number; width: number }) => (
+                                <List
+                                    height={height}
+                                    width={width}
+                                    itemCount={filteredSuppliers.length}
+                                    itemSize={80}
+                                    itemData={itemData}
+                                >
+                                    {SupplierRow}
+                                </List>
+                            )}
+                        </AutoSizerAny>
+                    </div>
+                    <div className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 p-4">
+                        <div className="flex justify-between items-center text-sm font-bold text-gray-500 dark:text-gray-400">
+                             <div>{filteredSuppliers.length} fournisseurs</div>
+                             <div className="flex items-center gap-4">
+                                <span className="uppercase text-xs tracking-wider">Total Dettes:</span>
+                                <span className="text-lg font-black text-red-600">{formatCurrency(totalDisplayedDebt)}</span>
+                             </div>
+                        </div>
+                    </div>
+                </div>
+            ) : (
             <div className="bg-white dark:bg-gray-800 shadow-xl rounded-2xl border border-gray-100 dark:border-gray-700">
                 <div className="overflow-x-auto rounded-2xl">
                     <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
@@ -242,7 +419,7 @@ const SuppliersPage: React.FC = () => {
                             <th className="px-6 py-3 text-right text-[10px] font-black text-white uppercase tracking-widest">Actions</th>
                         </tr></thead>
                         <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                            {filteredSuppliers.map(item => {
+                            {paginatedSuppliers.map(item => {
                                 const balance = balances[item.id] || 0;
                                 return (
                                 <tr key={item.id} className={selectedIds.includes(item.id) ? 'bg-primary-50 dark:bg-gray-700/50' : 'hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors'}>
@@ -294,7 +471,20 @@ const SuppliersPage: React.FC = () => {
                         </tfoot>
                     </table>
                 </div>
+                {filteredSuppliers.length > itemsPerPage && (
+                    <div className="p-4 border-t border-gray-100 dark:border-gray-700">
+                        <Pagination
+                            currentPage={currentPage}
+                            totalPages={totalPages}
+                            onPageChange={setCurrentPage}
+                            totalItems={filteredSuppliers.length}
+                            itemsPerPage={itemsPerPage}
+                        />
+                    </div>
+                )}
             </div>
+            )}
+            </>
             )}
              <Modal isOpen={isBulkDeleteModalOpen} onClose={() => setIsBulkDeleteModalOpen(false)} title="Confirmer la suppression">
                 <div className="p-6"><p>Êtes-vous sûr de vouloir supprimer les {selectedIds.length} fournisseurs sélectionnés ?</p></div>

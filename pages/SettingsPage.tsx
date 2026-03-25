@@ -1,20 +1,17 @@
-
 import React, { useState, useEffect, FormEvent } from 'react';
-import { db, storage } from '../firebase';
-import { doc, getDoc, setDoc, collection, getDocs } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { AppSettings, User, Role, Warehouse, Category, Brand, Unit, Customer, Supplier, Product } from '../types';
+import { supabase } from '../supabase';
+import { AppSettings } from '../types';
 import { useAuth } from '../hooks/useAuth';
 import { useTheme } from '../context/ThemeContext';
-import { UploadIcon, DownloadIcon, ShieldCheckIcon, ImageIcon } from '../constants';
-import { permissionConfig } from '../config/permissions';
+import { UploadIcon, DownloadIcon, ShieldCheckIcon, ImageIcon, DatabaseIcon } from '../constants';
+import { normalizePhoneNumber, formatPhoneNumberDisplay } from '../utils/whatsappUtils';
 
 const initialSettings: AppSettings = {
     id: 'app-config',
-    companyName: 'RIDWANE-SUPERMARCHE',
+    companyName: 'ETS COUL & FRERES',
     companyAddress: 'Cotonou, Bénin',
     companyPhone: '+229 00 00 00 00',
-    companyEmail: 'contact@demo.com',
+    companyEmail: 'contact@coulfreres.com',
     companyContact: 'Direction',
     companyRCCM: 'RB/COT/24 B 0000',
     companyLogoUrl: '',
@@ -24,40 +21,12 @@ const initialSettings: AppSettings = {
     purchaseInvoicePrefix: 'ACH-',
     defaultTaxRate: 0,
     defaultPosCustomerId: 'walkin',
-    themeColor: 'teal', // Changé par défaut à 'teal'
-};
-
-const COLLECTIONS_TO_MIGRATE = [
-    'settings', 'categories', 'brands', 'units', 'warehouses', 
-    'products', 'customers', 'suppliers', 'sales', 'salePayments', 
-    'purchases', 'purchasePayments', 'stockAdjustments', 
-    'warehouseTransfers', 'users', 'roles'
-];
-
-const themeNames: Record<string, string> = {
-    slate: 'Ardoise',
-    red: 'Rouge',
-    orange: 'Orange',
-    amber: 'Ambre',
-    yellow: 'Jaune',
-    lime: 'Citron vert',
-    green: 'Vert',
-    emerald: 'Émeraude',
-    teal: 'Turquoise',
-    cyan: 'Cyan',
-    sky: 'Ciel',
-    blue: 'Bleu',
-    indigo: 'Indigo',
-    violet: 'Violet',
-    purple: 'Pourpre',
-    fuchsia: 'Fuchsia',
-    pink: 'Rose',
-    rose: 'Rouge rose'
+    themeColor: 'teal',
 };
 
 const SettingsPage: React.FC = () => {
     const { hasPermission } = useAuth();
-    const { setTheme, availableThemes, refreshSettings } = useTheme();
+    const { setTheme, availableThemes, refreshSettings: refreshThemeSettings } = useTheme();
 
     const [settings, setSettings] = useState<AppSettings>(initialSettings);
     const [loading, setLoading] = useState(true);
@@ -70,33 +39,51 @@ const SettingsPage: React.FC = () => {
     const [logoFile, setLogoFile] = useState<File | null>(null);
     const [logoPreview, setLogoPreview] = useState<string | null>(null);
     
-    const settingsDocRef = doc(db, 'settings', 'app-config');
-
     useEffect(() => {
-        const fetchInitialData = async () => {
-            setLoading(true);
-            try {
-                const settingsSnap = await getDoc(settingsDocRef);
-                if (settingsSnap.exists()) {
-                    const loadedSettings = settingsSnap.data() as Partial<AppSettings>;
-                    setSettings({ ...initialSettings, ...loadedSettings });
-                    if (loadedSettings.companyLogoUrl) {
-                        setLogoPreview(loadedSettings.companyLogoUrl);
-                    }
-                }
-            } catch (err) {
-                console.warn("Paramètres non chargés ou base vide.");
-            } finally {
-                setLoading(false);
-            }
-        };
-        fetchInitialData();
+        refreshSettings();
     }, []);
+
+    const refreshSettings = async () => {
+        setLoading(true);
+        try {
+            const { data, error } = await supabase.from('app_settings').select('*').eq('id', 'app-config').single();
+
+            if (!error && data) {
+                const loadedSettings = data as AppSettings;
+                setSettings(loadedSettings);
+                setTheme(loadedSettings.themeColor || 'teal');
+                if (loadedSettings.companyLogoUrl) {
+                    setLogoPreview(loadedSettings.companyLogoUrl);
+                }
+            } else {
+                await supabase.from('app_settings').upsert(initialSettings);
+                setSettings(initialSettings);
+            }
+        } catch (err: any) {
+            console.error("Erreur settings:", err);
+            setError("Impossible de charger les paramètres.");
+        } finally {
+            setLoading(false);
+        }
+    };
 
     const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
         const { name, value } = e.target;
         const isNumber = ['defaultTaxRate'].includes(name);
         setSettings(prev => ({ ...prev, [name]: isNumber ? parseFloat(value) || 0 : value }));
+    };
+
+    const handleWhatsappChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const value = e.target.value;
+        const cleanValue = value.replace(/[^0-9\s+]/g, '');
+        setSettings(prev => ({ ...prev, companyWhatsapp: cleanValue }));
+    };
+
+    const handleWhatsappBlur = () => {
+        if (settings.companyWhatsapp) {
+            const formatted = formatPhoneNumberDisplay(settings.companyWhatsapp);
+            setSettings(prev => ({ ...prev, companyWhatsapp: formatted }));
+        }
     };
 
     const handleThemeChange = (themeName: string) => {
@@ -114,7 +101,11 @@ const SettingsPage: React.FC = () => {
             }
             setLogoFile(file);
             const reader = new FileReader();
-            reader.onloadend = () => setLogoPreview(reader.result as string);
+            reader.onloadend = () => {
+                const base64String = reader.result as string;
+                setLogoPreview(base64String);
+                setSettings(prev => ({ ...prev, companyLogoUrl: base64String }));
+            };
             reader.readAsDataURL(file);
         }
     };
@@ -123,62 +114,61 @@ const SettingsPage: React.FC = () => {
         e.preventDefault();
         setIsSaving(true);
         setError(null);
+        setSuccess(null);
+
         try {
-            const settingsToSave = { ...settings };
-            if (logoFile) {
-                const fileName = `company_logo_${Date.now()}_${logoFile.name.replace(/[^a-zA-Z0-9.]/g, '_')}`;
-                const logoStorageRef = ref(storage, `settings/${fileName}`);
-                await uploadBytes(logoStorageRef, logoFile);
-                settingsToSave.companyLogoUrl = await getDownloadURL(logoStorageRef);
-            }
-            await setDoc(settingsDocRef, settingsToSave, { merge: true });
+            const { error } = await supabase.from('app_settings').upsert(settings);
+            if (error) throw error;
             
-            // Notification au contexte global pour mise à jour immédiate (Nom + Thème)
-            await refreshSettings();
+            refreshThemeSettings();
             
             setSuccess("Paramètres enregistrés avec succès !");
             setTimeout(() => setSuccess(null), 3000);
+            await refreshSettings();
         } catch (err: any) {
+            console.error("Erreur enregistrement settings:", err);
             setError(`Erreur d'enregistrement : ${err.message}`);
         } finally {
             setIsSaving(false);
         }
     };
 
-    // Fonctions de migration (conservées pour l'utilité administrative)
-    const handleInitializeAdmin = async () => {
-        if (!window.confirm("IMPORTANT : Cette opération va forcer la création de toutes les collections dans votre base Firebase. Voulez-vous continuer ?")) return;
+    const handleExport = async () => {
         setIsMigrating(true);
-        setImportLog(["🔌 Initialisation Firestore..."]);
+        setImportLog(["🚀 Préparation de l'exportation..."]);
         try {
-            await setDoc(doc(db, 'settings', 'app-config'), initialSettings);
-            // ... (logique d'initialisation identique au fichier précédent)
-            setImportLog(prev => [...prev, "🏁 Initialisation terminée !"]);
-            await refreshSettings();
-            setSuccess("Déploiement réussi.");
-        } catch (err: any) {
-            setError(`Échec : ${err.message}`);
-        } finally {
-            setIsMigrating(false);
-        }
-    };
+            const tablesToExport = [
+                'app_settings', 'categories', 'brands', 'units', 'warehouses', 
+                'products', 'customers', 'suppliers', 'sales', 'sale_items', 'sale_payments', 
+                'purchases', 'purchase_items', 'purchase_payments', 'stock_adjustments', 
+                'warehouse_transfers', 'users', 'roles', 'credit_notes', 'supplier_credit_notes',
+                'bank_transactions'
+            ];
 
-    const handleExportData = async () => {
-        setIsMigrating(true);
-        setImportLog(["🚀 Exportation..."]);
-        try {
             const fullData: any = {};
-            for (const collName of COLLECTIONS_TO_MIGRATE) {
-                const snap = await getDocs(collection(db, collName));
-                fullData[collName] = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+            
+            for (const tableName of tablesToExport) {
+                setImportLog(prev => [...prev, `📥 Lecture de la table ${tableName}...`]);
+                try {
+                    const { data, error } = await supabase.from(tableName).select('*');
+                    if (error) throw error;
+                    fullData[tableName] = data;
+                } catch (error: any) {
+                    console.error(`Erreur lecture ${tableName}:`, error);
+                    setImportLog(prev => [...prev, `⚠️ Erreur sur ${tableName}: ${error.message}`]);
+                    continue;
+                }
             }
+
             const dataStr = JSON.stringify(fullData, null, 2);
             const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
             const linkElement = document.createElement('a');
             linkElement.setAttribute('href', dataUri);
-            linkElement.setAttribute('download', `EXPORT_SYSTEME_${new Date().toISOString().split('T')[0]}.json`);
+            linkElement.setAttribute('download', `BACKUP_COUL_FRERES_${new Date().toISOString().split('T')[0]}.json`);
             linkElement.click();
+            
             setImportLog(prev => [...prev, "✅ Exportation terminée !"]);
+            setSuccess("Export réussi.");
         } catch (err: any) {
             setError(`Erreur export : ${err.message}`);
         } finally {
@@ -186,230 +176,370 @@ const SettingsPage: React.FC = () => {
         }
     };
 
-    const handleImportData = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
+    const handleImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
         if (!file) return;
+
+        if (!window.confirm("ATTENTION : Cette opération va importer des données et écraser les existantes. Assurez-vous d'avoir une sauvegarde. Continuer ?")) {
+            event.target.value = '';
+            return;
+        }
+
         setIsMigrating(true);
-        setImportLog(["🔍 Démarrage de l'importation..."]);
+        setImportLog(["🚀 Démarrage de l'import..."]);
+        setError(null);
+        setSuccess(null);
+
         const reader = new FileReader();
-        reader.onload = async (event) => {
+        reader.onload = async (e) => {
             try {
-                const importedData = JSON.parse(event.target?.result as string);
-                const totalCollections = COLLECTIONS_TO_MIGRATE.length;
-                let processedCollections = 0;
-                let totalItems = 0;
+                const content = e.target?.result as string;
+                const data = JSON.parse(content);
+                
+                let processedTables = 0;
                 let importedItems = 0;
+                let totalItems = 0;
 
-                // Premier passage pour compter les éléments
-                for (const collName of COLLECTIONS_TO_MIGRATE) {
-                    const items = importedData[collName] || [];
-                    totalItems += items.length;
-                }
-
-                setImportLog(prev => [...prev, `📦 Fichier analysé : ${totalItems} éléments trouvés dans ${totalCollections} collections.`]);
-
-                for (const collName of COLLECTIONS_TO_MIGRATE) {
-                    const items = importedData[collName] || [];
-                    if (items.length > 0) {
-                        setImportLog(prev => [...prev, `⏳ Traitement de ${collName} (${items.length} éléments)...`]);
-                        for (const item of items) {
-                            const { id, ...data } = item;
-                            await setDoc(doc(db, collName, id), data, { merge: true });
-                            importedItems++;
-                            // Afficher la progression tous les 10 éléments ou à la fin
-                            if (importedItems % 10 === 0 || importedItems === totalItems) {
-                                const progress = Math.round((importedItems / totalItems) * 100);
-                                setImportLog(prev => {
-                                    const lastLog = prev[prev.length - 1];
-                                    if (lastLog.startsWith('📊 Progression :')) {
-                                        const newLog = [...prev];
-                                        newLog[newLog.length - 1] = `📊 Progression : ${progress}% (${importedItems}/${totalItems})`;
-                                        return newLog;
-                                    }
-                                    return [...prev, `📊 Progression : ${progress}% (${importedItems}/${totalItems})`];
-                                });
-                            }
-                        }
+                 for (const tableName of Object.keys(data)) {
+                    if (Array.isArray(data[tableName])) {
+                        totalItems += data[tableName].length;
                     }
-                    processedCollections++;
                 }
+                setImportLog(prev => [...prev, `📦 Fichier analysé : ${totalItems} éléments trouvés.`]);
+
+                for (const tableName of Object.keys(data)) {
+                    const rows = data[tableName];
+                    if (!Array.isArray(rows) || rows.length === 0) continue;
+
+                    setImportLog(prev => [...prev, `📤 Importation de ${rows.length} entrées dans ${tableName}...`]);
+
+                    const { error } = await supabase.from(tableName).upsert(rows);
+                    
+                    if (error) {
+                        console.error(`Erreur import ${tableName}:`, error);
+                        setImportLog(prev => [...prev, `⚠️ Erreur sur ${tableName}: ${error.message}`]);
+                    } else {
+                        importedItems += rows.length;
+                        setImportLog(prev => [...prev, `✅ ${tableName} traité.`]);
+                        processedTables++;
+                    }
+                }
+
+                setImportLog(prev => [...prev, "🏁 Import terminé !"]);
+                setSuccess("Importation terminée.");
                 
-                await refreshSettings();
-                setSuccess("Importation réussie !");
-                
-                // Rapport final
-                const report = [
-                    "✅ IMPORTATION TERMINÉE AVEC SUCCÈS",
+                 const report = [
+                    "✅ IMPORTATION TERMINÉE",
                     "----------------------------------------",
                     `📅 Date : ${new Date().toLocaleString()}`,
-                    `📂 Collections traitées : ${processedCollections}/${totalCollections}`,
+                    `📂 Tables traitées : ${processedTables}`,
                     `📝 Éléments importés : ${importedItems}/${totalItems}`,
                     "----------------------------------------",
                     "Le système va redémarrer dans quelques secondes..."
                 ];
                 setImportLog(prev => [...prev, ...report]);
 
-                setTimeout(() => window.location.reload(), 5000);
+                setTimeout(() => window.location.reload(), 2000);
+
             } catch (err: any) {
-                setError(`Erreur import : ${err.message}`);
-                setImportLog(prev => [...prev, `❌ ERREUR : ${err.message}`]);
+                console.error(err);
+                setError(`Erreur lors de l'import : ${err.message}`);
+                setImportLog(prev => [...prev, `❌ CRASH : ${err.message}`]);
             } finally {
                 setIsMigrating(false);
+                event.target.value = '';
             }
         };
         reader.readAsText(file);
     };
 
-    if (loading) return <div className="p-8 text-center text-gray-500">Chargement des paramètres...</div>;
-
-    const inputClasses = "mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-lg shadow-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white focus:ring-primary-500 focus:border-primary-500 outline-none transition-all";
+    if (loading && !settings.companyName) {
+        return <div className="p-8 text-center">Chargement des paramètres...</div>;
+    }
 
     return (
-        <div className="pb-12 max-w-5xl mx-auto space-y-8">
-            <header>
-                <h1 className="text-3xl font-black text-gray-900 dark:text-white uppercase tracking-tight">Paramètres Système</h1>
-                <p className="text-gray-500 dark:text-gray-400">Gérez l'identité et les règles globales de votre application.</p>
-            </header>
-            
-            <form onSubmit={handleSave} className="space-y-8">
-                {/* 1. Informations Entreprise */}
-                <section className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700">
-                    <h2 className="text-lg font-bold mb-6 text-primary-600 dark:text-primary-400 flex items-center">
-                        <span className="w-8 h-8 bg-primary-100 dark:bg-primary-900/30 rounded-lg flex items-center justify-center mr-3 text-sm">1</span>
-                        Identité de l'entreprise
-                    </h2>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div className="md:col-span-2">
-                            <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-1">Logo de l'entreprise</label>
-                            <div className="flex items-center space-x-6">
-                                {logoPreview ? (
+        <div className="p-6">
+            <div className="flex justify-between items-center mb-6">
+                <h1 className="text-2xl font-bold text-gray-800 dark:text-white flex items-center gap-2">
+                    <span className="p-2 bg-indigo-100 dark:bg-indigo-900 rounded-lg text-indigo-600 dark:text-indigo-400">
+                        ⚙️
+                    </span>
+                    Paramètres
+                </h1>
+                
+                {hasPermission('admin') && (
+                     <div className="flex gap-2">
+                        {/* Maintenance actions are in the maintenance card */}
+                     </div>
+                )}
+            </div>
+
+            {error && (
+                <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-4" role="alert">
+                    <p>{error}</p>
+                </div>
+            )}
+
+            {success && (
+                <div className="bg-green-100 border-l-4 border-green-500 text-green-700 p-4 mb-4" role="alert">
+                    <p>{success}</p>
+                </div>
+            )}
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Colonne Gauche : Formulaire */}
+                <div className="lg:col-span-2 space-y-6">
+                    
+                    {/* Carte : Identité de l'entreprise */}
+                    <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6">
+                        <h2 className="text-lg font-semibold mb-4 text-gray-700 dark:text-gray-200 border-b pb-2">
+                            Identité de l'entreprise
+                        </h2>
+                        <form onSubmit={handleSave}>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="col-span-2 flex justify-center mb-4">
                                     <div className="relative group">
-                                        <img src={logoPreview} alt="Aperçu Logo" className="h-24 w-24 object-contain rounded-xl border-2 border-gray-100 dark:border-gray-600 p-2 bg-white" />
-                                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 rounded-xl transition-opacity flex items-center justify-center text-white text-[10px] font-bold">CHANGER</div>
+                                        <div className="w-32 h-32 rounded-full border-4 border-indigo-100 dark:border-indigo-900 overflow-hidden bg-gray-100 dark:bg-gray-700 flex items-center justify-center">
+                                            {logoPreview ? (
+                                                <img src={logoPreview} alt="Logo" className="w-full h-full object-cover" />
+                                            ) : (
+                                                <ImageIcon className="w-12 h-12 text-gray-400" />
+                                            )}
+                                        </div>
+                                        <label htmlFor="logo-upload" className="absolute bottom-0 right-0 bg-indigo-600 text-white p-2 rounded-full cursor-pointer hover:bg-indigo-700 shadow-lg transform transition-transform hover:scale-110">
+                                            <UploadIcon className="w-4 h-4" />
+                                            <input 
+                                                id="logo-upload" 
+                                                type="file" 
+                                                accept="image/*" 
+                                                className="hidden" 
+                                                onChange={handleLogoChange}
+                                            />
+                                        </label>
                                     </div>
-                                ) : (
-                                    <div className="h-24 w-24 rounded-xl bg-gray-50 dark:bg-gray-700 flex flex-col items-center justify-center text-gray-400 border-2 border-dashed border-gray-200 dark:border-gray-600">
-                                        <ImageIcon className="w-8 h-8 mb-1 opacity-50" />
-                                        <span className="text-[10px] font-bold uppercase">Aucun</span>
-                                    </div>
-                                )}
-                                <label className="flex-1 cursor-pointer">
-                                    <span className="inline-flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm font-medium text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors">
-                                        <UploadIcon className="w-4 h-4 mr-2" /> Sélectionner un nouveau fichier logo
-                                    </span>
-                                    <input type="file" className="hidden" accept="image/*" onChange={handleLogoChange} />
-                                </label>
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Nom de l'entreprise</label>
+                                    <input
+                                        type="text"
+                                        name="companyName"
+                                        value={settings.companyName}
+                                        onChange={handleInputChange}
+                                        className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                                        required
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Téléphone</label>
+                                    <input
+                                        type="text"
+                                        name="companyPhone"
+                                        value={settings.companyPhone}
+                                        onChange={handleInputChange}
+                                        className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">WhatsApp (Admin)</label>
+                                    <input
+                                        type="tel"
+                                        name="companyWhatsapp"
+                                        value={settings.companyWhatsapp || ''}
+                                        onChange={handleWhatsappChange}
+                                        onBlur={handleWhatsappBlur}
+                                        placeholder="ex: 229XXXXXXXX"
+                                        className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                                    />
+                                    {settings.companyWhatsapp && (
+                                        <p className="text-xs text-gray-500 mt-1">
+                                            Numéro international : <span className="font-mono font-semibold">+{normalizePhoneNumber(settings.companyWhatsapp)}</span>
+                                        </p>
+                                    )}
+                                </div>
+                                <div className="col-span-2">
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Adresse</label>
+                                    <textarea
+                                        name="companyAddress"
+                                        value={settings.companyAddress}
+                                        onChange={handleInputChange}
+                                        rows={3}
+                                        className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email</label>
+                                    <input
+                                        type="email"
+                                        name="companyEmail"
+                                        value={settings.companyEmail}
+                                        onChange={handleInputChange}
+                                        className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">RCCM / N° Fiscal</label>
+                                    <input
+                                        type="text"
+                                        name="companyRCCM"
+                                        value={settings.companyRCCM}
+                                        onChange={handleInputChange}
+                                        className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                                    />
+                                </div>
                             </div>
-                        </div>
-                        <div><label className="block text-sm font-bold mb-1">Nom de l'entreprise</label><input type="text" name="companyName" value={settings.companyName} onChange={handleInputChange} className={inputClasses} /></div>
-                        <div><label className="block text-sm font-bold mb-1">Téléphone</label><input type="text" name="companyPhone" value={settings.companyPhone} onChange={handleInputChange} className={inputClasses} /></div>
-                        <div><label className="block text-sm font-bold mb-1">Email de contact</label><input type="email" name="companyEmail" value={settings.companyEmail} onChange={handleInputChange} className={inputClasses} /></div>
-                        <div><label className="block text-sm font-bold mb-1">RCCM / IFU</label><input type="text" name="companyRCCM" value={settings.companyRCCM} onChange={handleInputChange} className={inputClasses} /></div>
-                        <div className="md:col-span-2"><label className="block text-sm font-bold mb-1">Adresse entrepôts</label><input type="text" name="companyAddress" value={settings.companyAddress} onChange={handleInputChange} className={inputClasses} /></div>
-                    </div>
-                </section>
 
-                {/* 2. Configuration Système & POS */}
-                <section className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700">
-                    <h2 className="text-lg font-bold mb-6 text-primary-600 dark:text-primary-400 flex items-center">
-                        <span className="w-8 h-8 bg-primary-100 dark:bg-primary-900/30 rounded-lg flex items-center justify-center mr-3 text-sm">2</span>
-                        Système & Facturation
-                    </h2>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                        <div><label className="block text-sm font-bold mb-1">Devise (Symbole)</label><input type="text" name="currencySymbol" value={settings.currencySymbol} onChange={handleInputChange} className={inputClasses} /></div>
-                        <div><label className="block text-sm font-bold mb-1">TVA par défaut (%)</label><input type="number" name="defaultTaxRate" value={settings.defaultTaxRate} onChange={handleInputChange} className={inputClasses} /></div>
-                        <div><label className="block text-sm font-bold mb-1">ID Client POS défaut</label><input type="text" name="defaultPosCustomerId" value={settings.defaultPosCustomerId} onChange={handleInputChange} className={inputClasses} /></div>
-                        <div><label className="block text-sm font-bold mb-1">Préfixe Ventes</label><input type="text" name="saleInvoicePrefix" value={settings.saleInvoicePrefix} onChange={handleInputChange} className={inputClasses} /></div>
-                        <div><label className="block text-sm font-bold mb-1">Préfixe Achats</label><input type="text" name="purchaseInvoicePrefix" value={settings.purchaseInvoicePrefix} onChange={handleInputChange} className={inputClasses} /></div>
-                        <div className="md:col-span-3">
-                            <label className="block text-sm font-bold mb-1">Pied de page des factures</label>
-                            <textarea name="invoiceFooterText" value={settings.invoiceFooterText} onChange={handleInputChange} rows={3} className={inputClasses}></textarea>
-                        </div>
-                    </div>
-                </section>
+                             <h2 className="text-lg font-semibold mt-8 mb-4 text-gray-700 dark:text-gray-200 border-b pb-2">
+                                Configuration Système
+                            </h2>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Devise</label>
+                                    <input
+                                        type="text"
+                                        name="currencySymbol"
+                                        value={settings.currencySymbol}
+                                        onChange={handleInputChange}
+                                        className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Taux de TVA par défaut (%)</label>
+                                    <input
+                                        type="number"
+                                        name="defaultTaxRate"
+                                        value={settings.defaultTaxRate}
+                                        onChange={handleInputChange}
+                                        className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                                        step="0.01"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Préfixe Vente</label>
+                                    <input
+                                        type="text"
+                                        name="saleInvoicePrefix"
+                                        value={settings.saleInvoicePrefix}
+                                        onChange={handleInputChange}
+                                        className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Préfixe Achat</label>
+                                    <input
+                                        type="text"
+                                        name="purchaseInvoicePrefix"
+                                        value={settings.purchaseInvoicePrefix}
+                                        onChange={handleInputChange}
+                                        className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                                    />
+                                </div>
+                                <div className="col-span-2">
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Pied de page facture</label>
+                                    <textarea
+                                        name="invoiceFooterText"
+                                        value={settings.invoiceFooterText}
+                                        onChange={handleInputChange}
+                                        rows={2}
+                                        className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                                    />
+                                </div>
+                            </div>
 
-                {/* 3. Thème & Apparence */}
-                <section className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700">
-                    <h2 className="text-lg font-bold mb-6 text-primary-600 dark:text-primary-400 flex items-center">
-                        <span className="w-8 h-8 bg-primary-100 dark:bg-primary-900/30 rounded-lg flex items-center justify-center mr-3 text-sm">3</span>
-                        Personnalisation visuelle
-                    </h2>
-                    <div>
-                        <label className="block text-sm font-bold mb-4">Couleur principale de l'application</label>
-                        <div className="grid grid-cols-3 sm:grid-cols-6 gap-4">
-                            {Object.keys(availableThemes).map((t) => (
+                            <div className="mt-6 flex justify-end">
                                 <button
-                                    key={t}
-                                    type="button"
-                                    onClick={() => handleThemeChange(t)}
-                                    className={`relative flex items-center justify-center p-4 rounded-xl border-2 transition-all ${
-                                        settings.themeColor === t 
-                                        ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 ring-4 ring-primary-500/10' 
-                                        : 'border-gray-100 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
-                                    }`}
+                                    type="submit"
+                                    disabled={isSaving}
+                                    className={`px-6 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 flex items-center gap-2 ${isSaving ? 'opacity-75 cursor-not-allowed' : ''}`}
                                 >
-                                    <div className="w-6 h-6 rounded-full mr-3 shadow-inner" style={{ backgroundColor: `rgb(${availableThemes[t as keyof typeof availableThemes]['500']})` }}></div>
-                                    <span className="capitalize font-bold text-sm">{themeNames[t] || t}</span>
-                                    {settings.themeColor === t && <div className="absolute -top-2 -right-2 bg-primary-500 text-white rounded-full p-1 shadow-lg"><ShieldCheckIcon className="w-4 h-4"/></div>}
+                                    {isSaving ? (
+                                        <>
+                                            <span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full"></span>
+                                            Enregistrement...
+                                        </>
+                                    ) : (
+                                        <>
+                                            <ShieldCheckIcon className="w-5 h-5" />
+                                            Enregistrer les paramètres
+                                        </>
+                                    )}
                                 </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                {/* Colonne Droite : Thème & Maintenance */}
+                <div className="space-y-6">
+                    {/* Carte : Thème */}
+                    <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6">
+                        <h2 className="text-lg font-semibold mb-4 text-gray-700 dark:text-gray-200 border-b pb-2">
+                            Apparence
+                        </h2>
+                        <div className="grid grid-cols-4 gap-2">
+                            {Object.entries(availableThemes).map(([name, colorClass]) => (
+                                <button
+                                    key={name}
+                                    onClick={() => handleThemeChange(name)}
+                                    className={`w-full aspect-square rounded-lg shadow-sm border-2 transition-all ${settings.themeColor === name ? 'border-gray-900 dark:border-white scale-110' : 'border-transparent hover:scale-105'}`}
+                                    style={{ backgroundColor: `rgb(${colorClass[500]})` }}
+                                    title={name}
+                                />
                             ))}
                         </div>
+                        <p className="mt-4 text-center text-sm text-gray-500 dark:text-gray-400">
+                            Thème actuel : <span className="font-semibold capitalize">{settings.themeColor}</span>
+                        </p>
                     </div>
-                </section>
 
-                {/* Bouton de sauvegarde */}
-                <div className="sticky bottom-6 flex justify-end items-center bg-white/80 dark:bg-gray-900/80 backdrop-blur-md p-4 rounded-2xl shadow-2xl border border-white dark:border-gray-800 z-10">
-                    {error && <p className="text-red-500 font-bold mr-6 text-sm">{error}</p>}
-                    {success && <p className="text-green-500 font-bold mr-6 text-sm">{success}</p>}
-                    <button type="submit" disabled={isSaving} className="px-10 py-4 bg-primary-600 text-white rounded-xl font-black shadow-lg hover:bg-primary-700 active:scale-95 transition-all disabled:opacity-50">
-                        {isSaving ? 'ENREGISTREMENT...' : 'SAUVEGARDER LES CHANGEMENTS'}
-                    </button>
-                </div>
-            </form>
+                    {/* Carte : Maintenance (Admin Only) */}
+                    {hasPermission('admin') && (
+                        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 border-t-4 border-yellow-500">
+                            <h2 className="text-lg font-semibold mb-4 text-gray-700 dark:text-gray-200 flex items-center gap-2">
+                                <DatabaseIcon className="w-5 h-5 text-yellow-500" />
+                                Zone de Maintenance
+                            </h2>
+                            
+                            <div className="space-y-4">
+                                <div className="p-4 bg-gray-50 dark:bg-gray-700 rounded border border-gray-200 dark:border-gray-600">
+                                    <h3 className="font-medium text-gray-800 dark:text-gray-200 mb-2">Sauvegarde & Restauration</h3>
+                                    <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                                        Exportez ou importez vos données au format JSON.
+                                    </p>
+                                    
+                                    <div className="flex flex-col gap-2">
+                                        <button
+                                            onClick={handleExport}
+                                            disabled={isMigrating}
+                                            className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 text-sm"
+                                        >
+                                            <DownloadIcon className="w-4 h-4" /> Exporter Données (JSON)
+                                        </button>
+                                        
+                                        <label className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm cursor-pointer">
+                                            <UploadIcon className="w-4 h-4" /> Importer Données (JSON)
+                                            <input 
+                                                type="file" 
+                                                accept=".json" 
+                                                className="hidden" 
+                                                onChange={handleImport}
+                                                disabled={isMigrating}
+                                            />
+                                        </label>
+                                    </div>
+                                </div>
 
-            {/* SECTION MAINTENANCE (Migration / Export) */}
-            <div className="mt-16 bg-gray-900 rounded-3xl overflow-hidden shadow-2xl">
-                <div className="p-8 border-b border-gray-800">
-                    <div className="flex items-center space-x-4 mb-4">
-                        <div className="bg-red-500/20 p-3 rounded-2xl"><ShieldCheckIcon className="w-8 h-8 text-red-500" /></div>
-                        <div>
-                            <h2 className="text-xl font-black text-white uppercase tracking-wider">Zone de Maintenance</h2>
-                            <p className="text-gray-400 text-sm">Outils d'initialisation et de sauvegarde de la base de données.</p>
+                                {isMigrating && (
+                                    <div className="mt-4 p-3 bg-gray-100 dark:bg-gray-900 rounded text-xs font-mono max-h-48 overflow-y-auto">
+                                        {importLog.map((log, i) => (
+                                            <div key={i} className="mb-1">{log}</div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
                         </div>
-                    </div>
+                    )}
                 </div>
-                
-                <div className="p-8 grid grid-cols-1 md:grid-cols-2 gap-8">
-                    <div className="bg-gray-800/50 p-6 rounded-2xl border border-gray-700">
-                        <h3 className="text-white font-bold mb-2">Structure de données</h3>
-                        <p className="text-gray-400 text-sm mb-6 leading-relaxed">Si vous installez l'application sur un nouveau projet Firebase, utilisez ce bouton pour créer automatiquement toutes les collections nécessaires.</p>
-                        <button onClick={handleInitializeAdmin} disabled={isMigrating} className="w-full py-3 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold transition-all active:scale-95 disabled:opacity-50 uppercase tracking-widest text-xs">
-                            Initialiser les collections
-                        </button>
-                    </div>
-
-                    <div className="bg-gray-800/50 p-6 rounded-2xl border border-gray-700">
-                        <h3 className="text-white font-bold mb-4 uppercase tracking-widest text-xs opacity-50">Transfert de données</h3>
-                        <div className="space-y-4">
-                            <button onClick={handleExportData} disabled={isMigrating} className="w-full flex items-center justify-center py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold transition-all">
-                                <DownloadIcon className="w-5 h-5 mr-2" /> Exporter tout en JSON
-                            </button>
-                            <label className="flex flex-col items-center justify-center py-3 px-4 bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold transition-all cursor-pointer">
-                                <span className="flex items-center"><UploadIcon className="w-5 h-5 mr-2" /> Importer un fichier JSON</span>
-                                <input type="file" accept=".json" onChange={handleImportData} className="hidden" />
-                            </label>
-                        </div>
-                    </div>
-                </div>
-
-                {importLog.length > 0 && (
-                    <div className="p-8 bg-black">
-                        <h4 className="text-[10px] font-black text-gray-500 uppercase mb-4 tracking-widest">Journal Système</h4>
-                        <div className="font-mono text-[10px] text-green-400 space-y-1 max-h-40 overflow-y-auto">
-                            {importLog.map((log, i) => <div key={i}>[{new Date().toLocaleTimeString()}] {log}</div>)}
-                        </div>
-                    </div>
-                )}
             </div>
         </div>
     );

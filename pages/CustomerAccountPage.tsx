@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { db } from '../firebase';
-import { doc, getDoc, collection, getDocs, query, where, runTransaction, DocumentData, setDoc } from 'firebase/firestore';
+import { supabase } from '../supabase';
 import { Customer, Sale, SalePayment, PaymentMethod, PaymentStatus, AppSettings, DeletedSalePayment } from '../types';
 import { ArrowLeftIcon, PrintIcon, TrendingUpIcon, WarningIcon, PaymentIcon, DeleteIcon } from '../constants';
 import { useReactToPrint } from 'react-to-print';
@@ -50,6 +49,7 @@ interface AccountMovement {
     const [paymentNotes, setPaymentNotes] = useState('');
     const [selectedSaleId, setSelectedSaleId] = useState<string>('');
     const [useCreditBalance, setUseCreditBalance] = useState(false);
+    const [selectAllInvoices, setSelectAllInvoices] = useState(false);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
@@ -77,9 +77,9 @@ interface AccountMovement {
 
     const fetchSettings = async () => {
         try {
-            const settingsSnap = await getDocs(collection(db, 'appSettings'));
-            if (!settingsSnap.empty) {
-                setSettings({ id: settingsSnap.docs[0].id, ...settingsSnap.docs[0].data() } as AppSettings);
+            const { data: settingsData } = await supabase.from('app_settings').select('*');
+            if (settingsData && settingsData.length > 0) {
+                setSettings(settingsData[0] as AppSettings);
             }
         } catch (error) {
             console.error("Erreur chargement paramètres:", error);
@@ -90,31 +90,37 @@ interface AccountMovement {
         if (!id) return;
         if (!background) setLoading(true);
         try {
-            const custSnap = await getDoc(doc(db, 'customers', id));
-            if (!custSnap.exists()) { navigate('/customers'); return; }
-            const custData = { id: custSnap.id, ...custSnap.data() } as Customer;
-            setCustomer(custData);
+            const { data: custData, error: custError } = await supabase
+                .from('customers')
+                .select('*')
+                .eq('id', id)
+                .single();
+            if (custError || !custData) { navigate('/customers'); return; }
+            setCustomer(custData as Customer);
 
-            const salesQuery = query(collection(db, "sales"), where("customerId", "==", id));
-            const salesSnap = await getDocs(salesQuery);
-            const salesDocs = salesSnap.docs.map(d => ({ id: d.id, ...d.data() } as Sale));
+            const { data: salesDocs, error: salesError } = await supabase
+                .from('sales')
+                .select('*')
+                .eq('customerId', id);
             
-            const saleIds = salesDocs.map(s => s.id);
-            let allPayments: SalePayment[] = [];
+            if (salesError) throw salesError;
+            
+            const saleIds = (salesDocs || []).map(s => s.id);
             const openingBalanceId = `OPENING_BALANCE_${id}`;
             const creditBalanceId = `CREDIT_BALANCE_${id}`;
 
-            // Toujours récupérer les paiements, même s'il n'y a pas de ventes, pour le solde d'ouverture et crédits
-            const pSnap = await getDocs(collection(db, "salePayments"));
-            allPayments = pSnap.docs
-                .map(d => ({ id: d.id, ...d.data() } as SalePayment))
-                .filter(p => saleIds.includes(p.saleId) || p.saleId === openingBalanceId || p.saleId === creditBalanceId);
+            const { data: allPayments, error: paymentsError } = await supabase
+                .from('sale_payments')
+                .select('*')
+                .or(`saleId.in.(${saleIds.join(',')}),saleId.eq.${openingBalanceId},saleId.eq.${creditBalanceId}`);
+
+            if (paymentsError) throw paymentsError;
 
             const combined: AccountMovement[] = [];
             
             let currentOpeningBalanceRemaining = 0;
             if (custData.openingBalance && custData.openingBalance > 0) {
-                const openingPayments = allPayments.filter(p => p.saleId === openingBalanceId);
+                const openingPayments = (allPayments || []).filter(p => p.saleId === openingBalanceId);
                 const totalOpeningPaid = openingPayments.reduce((sum, p) => sum + p.amount, 0);
                 currentOpeningBalanceRemaining = custData.openingBalance - totalOpeningPaid;
                 
@@ -144,7 +150,7 @@ interface AccountMovement {
             }
             setOpeningBalanceRemaining(currentOpeningBalanceRemaining);
 
-            salesDocs.forEach(s => {
+            (salesDocs || []).forEach(s => {
                 combined.push({
                     date: s.date,
                     ref: s.referenceNumber,
@@ -156,7 +162,7 @@ interface AccountMovement {
                     saleId: s.id
                 });
 
-                const paymentsForThisSale = allPayments.filter(p => p.saleId === s.id);
+                const paymentsForThisSale = (allPayments || []).filter(p => p.saleId === s.id);
                 const sumPaymentsDocs = paymentsForThisSale.reduce((acc, p) => acc + p.amount, 0);
                 
                 if (s.paidAmount > sumPaymentsDocs + 1) { 
@@ -172,11 +178,11 @@ interface AccountMovement {
                 }
             });
 
-            allPayments.forEach(p => {
+            (allPayments || []).forEach(p => {
                 // On ignore les paiements du solde d'ouverture car ils sont déjà traités plus haut
-                if (p.saleId.startsWith('OPENING_BALANCE_')) return;
+                if (p.saleId?.startsWith('OPENING_BALANCE_')) return;
 
-                if (p.saleId.startsWith('CREDIT_BALANCE_')) {
+                if (p.saleId?.startsWith('CREDIT_BALANCE_')) {
                     combined.push({
                         date: p.date,
                         ref: `AVOIR-${p.id.slice(-4).toUpperCase()}`,
@@ -194,7 +200,7 @@ interface AccountMovement {
                 // Exclure l'utilisation du crédit (Compte Avoir) du solde global pour éviter le double comptage
                 if (p.method === 'Compte Avoir') return;
 
-                const parentSale = salesDocs.find(s => s.id === p.saleId);
+                const parentSale = (salesDocs || []).find(s => s.id === p.saleId);
                 combined.push({
                     date: p.date,
                     ref: `REG-${p.id.slice(-4).toUpperCase()}`,
@@ -208,22 +214,31 @@ interface AccountMovement {
                 });
             });
 
-            combined.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+            combined.sort((a, b) => {
+                const dateDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
+                if (dateDiff !== 0) return dateDiff;
+                // En cas de même date, les ventes (débit) passent avant les règlements (crédit)
+                // pour que le solde de la ligne vente soit correct avant son règlement.
+                if (a.debit !== b.debit) return b.debit - a.debit;
+                return 0;
+            });
 
             let runningBalance = 0;
             let tDue = 0;
             let tPaid = 0;
             const processed = combined.map(m => {
-                runningBalance += (m.debit - m.credit);
-                tDue += m.debit;
-                tPaid += m.credit;
-                return { ...m, balance: runningBalance };
+                const debit = Number(m.debit) || 0;
+                const credit = Number(m.credit) || 0;
+                runningBalance += (debit - credit);
+                tDue += debit;
+                tPaid += credit;
+                return { ...m, balance: runningBalance, debit, credit };
             });
 
             setMovements(processed);
             setSummary({ totalDue: tDue, totalPaid: tPaid, balance: runningBalance });
             
-            const unpaid = salesDocs.filter(s => s.paymentStatus !== 'Payé');
+            const unpaid = (salesDocs || []).filter(s => s.paymentStatus !== 'Payé');
             setUnpaidSales(unpaid.sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime()));
             
             if (currentOpeningBalanceRemaining > 0) {
@@ -251,7 +266,7 @@ interface AccountMovement {
     };
 
     const confirmDeletePayment = async () => {
-        if (!paymentToDelete || !user) return;
+        if (!paymentToDelete || !user || !id) return;
         if (!deleteReason.trim()) {
             alert("Veuillez saisir un motif de suppression.");
             return;
@@ -259,81 +274,80 @@ interface AccountMovement {
 
         setIsDeleting(true);
         try {
-            await runTransaction(db, async (transaction) => {
-                const { id: paymentId, saleId, amount } = paymentToDelete;
-                
-                // Get payment data first
-                const paymentRef = doc(db, "salePayments", paymentId);
-                const paymentSnap = await transaction.get(paymentRef);
-                if (!paymentSnap.exists()) throw new Error("Paiement introuvable");
-                const paymentData = paymentSnap.data() as SalePayment;
+            const { id: paymentId, saleId, amount } = paymentToDelete;
+            
+            // Get payment data
+            const { data: paymentData, error: pError } = await supabase
+                .from('sale_payments')
+                .select('*')
+                .eq('id', paymentId)
+                .single();
+            if (pError || !paymentData) throw new Error("Paiement introuvable");
 
-                // Handle Credit Balance Impacts
-                const customerRef = doc(db, "customers", id!);
-                const customerSnap = await transaction.get(customerRef);
-                
-                if (customerSnap.exists()) {
-                    const customerData = customerSnap.data() as Customer;
-                    let currentCredit = customerData.creditBalance || 0;
-                    let creditChanged = false;
+            // Handle Credit Balance Impacts
+            const { data: customerData, error: cError } = await supabase
+                .from('customers')
+                .select('*')
+                .eq('id', id)
+                .single();
+            
+            if (!cError && customerData) {
+                let currentCredit = customerData.creditBalance || 0;
+                let creditChanged = false;
 
-                    // CAS 1: Remboursement si payé par 'Compte Avoir'
-                    if (paymentData.method === 'Compte Avoir') {
-                        currentCredit += amount;
-                        creditChanged = true;
-                    }
-
-                    // CAS 2: Déduction si on supprime un Avoir (Surplus généré)
-                    if (saleId.startsWith('CREDIT_BALANCE_')) {
-                        if (currentCredit < amount) {
-                            throw new Error(`Impossible de supprimer cet avoir : une partie a déjà été utilisée (Solde: ${formatCurrency(currentCredit)}).`);
-                        }
-                        currentCredit -= amount;
-                        creditChanged = true;
-                    }
-
-                    if (creditChanged) {
-                        transaction.update(customerRef, { creditBalance: currentCredit });
-                    }
+                if (paymentData.method === 'Compte Avoir') {
+                    currentCredit += amount;
+                    creditChanged = true;
                 }
 
-                // 1. Si c'est un paiement de solde d'ouverture
-                if (saleId.startsWith('OPENING_BALANCE_') || saleId.startsWith('CREDIT_BALANCE_')) {
-                    // Nothing to update on a sale document
-                } else {
-                    // 2. Si c'est un paiement de facture, on doit mettre à jour la facture
-                    const saleRef = doc(db, "sales", saleId);
-                    const saleSnap = await transaction.get(saleRef);
-                    
-                    if (saleSnap.exists()) {
-                        const saleData = saleSnap.data() as Sale;
-                        const newPaid = Math.max(0, (saleData.paidAmount || 0) - amount);
-                        // const remaining = saleData.grandTotal - newPaid;
-                        
-                        let newStatus: PaymentStatus = 'Non payé';
-                        if (newPaid >= saleData.grandTotal - 0.1) newStatus = 'Payé';
-                        else if (newPaid > 0.1) newStatus = 'Partiel';
-
-                        transaction.update(saleRef, {
-                            paidAmount: newPaid,
-                            paymentStatus: newStatus
-                        });
+                if (saleId?.startsWith('CREDIT_BALANCE_')) {
+                    if (currentCredit < amount) {
+                        throw new Error(`Impossible de supprimer cet avoir : une partie a déjà été utilisée (Solde: ${formatCurrency(currentCredit)}).`);
                     }
+                    currentCredit -= amount;
+                    creditChanged = true;
                 }
 
-                // Store deleted payment info
-                const deletedPaymentRef = doc(collection(db, "deleted_salePayments"));
-                const deletedPaymentData: DeletedSalePayment = {
-                    originalPayment: paymentData,
-                    deletedAt: new Date().toISOString(),
-                    deletedBy: user.uid,
-                    deleteReason: deleteReason
-                };
-                transaction.set(deletedPaymentRef, deletedPaymentData);
+                if (creditChanged) {
+                    await supabase
+                        .from('customers')
+                        .update({ creditBalance: currentCredit })
+                        .eq('id', id);
+                }
+            }
 
-                // Delete original payment
-                transaction.delete(paymentRef);
-            });
+            // Update Sale if necessary
+            if (saleId && !saleId.startsWith('OPENING_BALANCE_') && !saleId.startsWith('CREDIT_BALANCE_')) {
+                const { data: saleData, error: sError } = await supabase
+                    .from('sales')
+                    .select('*')
+                    .eq('id', saleId)
+                    .single();
+                
+                if (!sError && saleData) {
+                    const newPaid = Math.max(0, (saleData.paidAmount || 0) - amount);
+                    let newStatus: PaymentStatus = 'En attente';
+                    if (newPaid >= saleData.grandTotal - 0.1) newStatus = 'Payé';
+                    else if (newPaid > 0.1) newStatus = 'Partiel';
+
+                    await supabase
+                        .from('sales')
+                        .update({ paidAmount: newPaid, paymentStatus: newStatus })
+                        .eq('id', saleId);
+                }
+            }
+
+            // Store deleted payment info
+            const deletedPaymentData: DeletedSalePayment = {
+                originalPayment: paymentData as SalePayment,
+                deletedAt: new Date().toISOString(),
+                deletedBy: user.uid,
+                deleteReason: deleteReason
+            };
+            await supabase.from('deleted_sale_payments').insert(deletedPaymentData);
+
+            // Delete original payment
+            await supabase.from('sale_payments').delete().eq('id', paymentId);
 
             await fetchAccountData();
             setDeleteModalOpen(false);
@@ -348,7 +362,7 @@ interface AccountMovement {
 
     const handleQuickPayment = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!user || paymentAmount <= 0 || !selectedSaleId) return;
+        if (!user || paymentAmount <= 0 || !id) return;
 
         if (paymentMethod === 'Mobile Money' && (!momoOperator || !momoNumber)) {
             setError("Opérateur et numéro requis pour Mobile Money.");
@@ -359,21 +373,18 @@ interface AccountMovement {
         setError(null);
         
         try {
-            // 1. Préparer la liste de toutes les dettes (Factures impayées + Solde ouverture)
             const allDebts: { id: string, type: 'sale' | 'opening', remaining: number, date: string, refNumber?: string }[] = [];
 
-            // A. Solde d'ouverture
             if (openingBalanceRemaining > 0.1) {
                 allDebts.push({
                     id: `OPENING_BALANCE_${id}`,
                     type: 'opening',
                     remaining: openingBalanceRemaining,
-                    date: '1970-01-01', // Priorité par date (très ancienne)
+                    date: '1970-01-01',
                     refNumber: 'SOLDE OUVERTURE'
                 });
             }
 
-            // B. Factures impayées (exclure celles déjà payées)
             unpaidSales.forEach(s => {
                 const rem = s.grandTotal - s.paidAmount;
                 if (rem > 0.1) {
@@ -387,187 +398,127 @@ interface AccountMovement {
                 }
             });
 
-            // 2. Ordonner les dettes : Celle sélectionnée en premier, puis les autres par date (plus anciennes d'abord)
             allDebts.sort((a, b) => {
                 if (a.id === selectedSaleId) return -1;
                 if (b.id === selectedSaleId) return 1;
                 return new Date(a.date).getTime() - new Date(b.date).getTime();
             });
 
-            // 3. Vérifier si le montant total dépasse la dette totale
             const totalDebt = allDebts.reduce((sum, d) => sum + d.remaining, 0);
-            if (paymentAmount > totalDebt + 10) { // Tolérance de 10 FCFA
+            if (paymentAmount > totalDebt + 10) {
                 if (!window.confirm(`Le montant saisi (${formatCurrency(paymentAmount)}) est supérieur à la dette totale du client (${formatCurrency(totalDebt)}). Voulez-vous continuer et créer un avoir pour le surplus ?`)) {
                     setIsSubmitting(false);
                     return;
                 }
             }
 
-            // 4. Exécuter la transaction de répartition (READS then WRITES)
-            await runTransaction(db, async (transaction) => {
-                // Lecture préalable du client pour gérer le solde Avoir
-                const customerRef = doc(db, 'customers', id!);
-                const customerSnap = await transaction.get(customerRef);
-                if (!customerSnap.exists()) throw new Error("Client introuvable");
-                const customerData = customerSnap.data() as Customer;
-                let currentCreditBalance = customerData.creditBalance || 0;
+            // Process Payment
+            const { data: customerData, error: custError } = await supabase
+                .from('customers')
+                .select('*')
+                .eq('id', id)
+                .single();
+            if (custError || !customerData) throw new Error("Client introuvable");
+            
+            let currentCreditBalance = customerData.creditBalance || 0;
+            let creditPart = 0;
+            let cashPart = paymentAmount;
 
-                let creditPart = 0;
-                let cashPart = paymentAmount;
+            if (paymentMethod === 'Compte Avoir') {
+                if (paymentAmount > currentCreditBalance) throw new Error(`Solde Avoir insuffisant (Disponible: ${formatCurrency(currentCreditBalance)})`);
+                creditPart = paymentAmount;
+                cashPart = 0;
+                currentCreditBalance -= creditPart;
+            } else if (useCreditBalance && currentCreditBalance > 0) {
+                creditPart = Math.min(paymentAmount, currentCreditBalance);
+                cashPart = paymentAmount - creditPart;
+                currentCreditBalance -= creditPart;
+            }
 
-                // Calcul de la part Crédit vs Cash
-                if (paymentMethod === 'Compte Avoir') {
-                    // Si on force "Compte Avoir", tout vient du crédit
-                    if (paymentAmount > currentCreditBalance) {
-                        throw new Error(`Solde Avoir insuffisant (Disponible: ${formatCurrency(currentCreditBalance)})`);
-                    }
-                    creditPart = paymentAmount;
-                    cashPart = 0;
-                    currentCreditBalance -= creditPart;
-                } else if (useCreditBalance && currentCreditBalance > 0) {
-                    // Si on coche "Utiliser l'avoir" avec un autre mode (Mixte)
-                    creditPart = Math.min(paymentAmount, currentCreditBalance);
-                    cashPart = paymentAmount - creditPart;
-                    currentCreditBalance -= creditPart;
+            let remainingCredit = creditPart;
+            let remainingCash = cashPart;
+
+            for (const debt of allDebts) {
+                if (remainingCredit <= 0.01 && remainingCash <= 0.01) break;
+
+                let currentDue = debt.remaining;
+                let saleData: any = null;
+
+                if (debt.type === 'sale') {
+                    const { data } = await supabase.from('sales').select('*').eq('id', debt.id).single();
+                    saleData = data;
+                    if (!saleData) continue;
+                    currentDue = saleData.grandTotal - saleData.paidAmount;
                 }
 
-                let remainingCredit = creditPart;
-                let remainingCash = cashPart;
-
-                const updatesToPerform: { ref: any, data: any }[] = [];
-                const paymentsToCreate: any[] = [];
-
-                // PHASE 1: READS & CALCULS (Dettes)
-                for (const debt of allDebts) {
-                    if (remainingCredit <= 0.01 && remainingCash <= 0.01) break;
-
-                    let currentDue = 0;
-                    let saleRef = null;
-                    let saleData = null;
-
-                    if (debt.type === 'sale') {
-                        saleRef = doc(db, 'sales', debt.id);
-                        const saleSnap = await transaction.get(saleRef);
-                        if (!saleSnap.exists()) continue;
-                        saleData = saleSnap.data() as Sale;
-                        currentDue = saleData.grandTotal - saleData.paidAmount;
-                    } else {
-                        // Opening balance
-                        currentDue = debt.remaining; 
-                    }
-
-                    // A. Paiement via Crédit
-                    if (remainingCredit > 0.01 && currentDue > 0.01) {
-                        const payAmount = Math.min(remainingCredit, currentDue);
-                        
-                        paymentsToCreate.push({
-                            saleId: debt.id,
-                            date: new Date().toISOString(),
-                            amount: payAmount,
-                            method: 'Compte Avoir',
-                            createdByUserId: user.uid,
-                            notes: (paymentNotes ? paymentNotes + ' ' : '') + `(Via Avoir)` + (allDebts.length > 1 && debt.id !== selectedSaleId ? ` (Reliquat)` : '')
-                        });
-
-                        currentDue -= payAmount;
-                        remainingCredit -= payAmount;
-
-                        if (debt.type === 'sale' && saleRef && saleData) {
-                            const newPaid = (saleData.paidAmount || 0) + payAmount;
-                            // On ne met à jour le statut qu'à la fin, donc on stocke l'info intermédiaire si besoin
-                            // Mais ici on peut cumuler les updates dans updatesToPerform ?
-                            // Attention : on ne peut pas avoir 2 updates sur la même ref dans updatesToPerform sans fusionner.
-                            // Simplification : On met à jour l'objet en mémoire 'saleData' si on doit payer en cash ensuite.
-                            saleData.paidAmount = newPaid;
-                        }
-                    }
-
-                    // B. Paiement via Cash (Reste)
-                    if (remainingCash > 0.01 && currentDue > 0.01) {
-                        const payAmount = Math.min(remainingCash, currentDue);
-                        
-                        const pData: any = {
-                            saleId: debt.id,
-                            date: new Date().toISOString(),
-                            amount: payAmount,
-                            method: paymentMethod, // Le mode sélectionné (Espèces, Momo, etc.)
-                            createdByUserId: user.uid,
-                            notes: paymentNotes + (allDebts.length > 1 && debt.id !== selectedSaleId ? ` (Reliquat)` : '')
-                        };
-                        if (paymentMethod === 'Mobile Money') {
-                            pData.momoOperator = momoOperator;
-                            pData.momoNumber = momoNumber;
-                        }
-                        
-                        paymentsToCreate.push(pData);
-
-                        currentDue -= payAmount;
-                        remainingCash -= payAmount;
-                        
-                        if (debt.type === 'sale' && saleRef && saleData) {
-                            saleData.paidAmount = (saleData.paidAmount || 0) + payAmount;
-                        }
-                    }
-
-                    // Finalisation Update Sale
-                    if (debt.type === 'sale' && saleRef && saleData) {
-                        const finalPaid = saleData.paidAmount;
-                        const newStatus = (saleData.grandTotal - finalPaid) <= 0.1 ? 'Payé' : 'Partiel';
-                        
-                        // Check if we already have an update for this ref (should not happen in this loop structure unless logic changes)
-                        updatesToPerform.push({
-                            ref: saleRef,
-                            data: { paidAmount: finalPaid, paymentStatus: newStatus }
-                        });
-                    }
-                }
-                
-                // Gestion du surplus -> Crédit (Uniquement sur la partie Cash)
-                // Le surplus de la partie crédit reste dans le crédit (déjà géré par math min)
-                if (remainingCash > 0.1) {
-                   const creditPayment: any = {
-                        saleId: `CREDIT_BALANCE_${id}`,
+                if (remainingCredit > 0.01 && currentDue > 0.01) {
+                    const payAmount = Math.min(remainingCredit, currentDue);
+                    await supabase.from('sale_payments').insert({
+                        saleId: debt.id,
                         date: new Date().toISOString(),
-                        amount: remainingCash,
+                        amount: payAmount,
+                        method: 'Compte Avoir',
+                        createdByUserId: user.uid,
+                        notes: (paymentNotes ? paymentNotes + ' ' : '') + `(Via Avoir)` + (allDebts.length > 1 && debt.id !== selectedSaleId ? ` (Reliquat)` : '')
+                    });
+                    currentDue -= payAmount;
+                    remainingCredit -= payAmount;
+                    if (saleData) saleData.paidAmount += payAmount;
+                }
+
+                if (remainingCash > 0.01 && currentDue > 0.01) {
+                    const payAmount = Math.min(remainingCash, currentDue);
+                    const pData: any = {
+                        saleId: debt.id,
+                        date: new Date().toISOString(),
+                        amount: payAmount,
                         method: paymentMethod,
                         createdByUserId: user.uid,
-                        notes: (paymentNotes || 'Avoir généré suite surplus') + ` (Surplus)`
-                   };
-                   if (paymentMethod === 'Mobile Money') {
-                        creditPayment.momoOperator = momoOperator;
-                        creditPayment.momoNumber = momoNumber;
-                   }
-                   paymentsToCreate.push(creditPayment);
-                   
-                   // Ajout du surplus au solde
-                   currentCreditBalance += remainingCash;
+                        notes: paymentNotes + (allDebts.length > 1 && debt.id !== selectedSaleId ? ` (Reliquat)` : '')
+                    };
+                    if (paymentMethod === 'Mobile Money') {
+                        pData.momoOperator = momoOperator;
+                        pData.momoNumber = momoNumber;
+                    }
+                    await supabase.from('sale_payments').insert(pData);
+                    currentDue -= payAmount;
+                    remainingCash -= payAmount;
+                    if (saleData) saleData.paidAmount += payAmount;
                 }
 
-                // PHASE 2: WRITES
-                // Mise à jour du solde client si modifié
-                if (currentCreditBalance !== (customerData.creditBalance || 0)) {
-                    transaction.update(customerRef, { creditBalance: currentCreditBalance });
+                if (debt.type === 'sale' && saleData) {
+                    const newStatus = (saleData.grandTotal - saleData.paidAmount) <= 0.1 ? 'Payé' : 'Partiel';
+                    await supabase.from('sales').update({ paidAmount: saleData.paidAmount, paymentStatus: newStatus }).eq('id', debt.id);
                 }
+            }
 
-                paymentsToCreate.forEach(p => {
-                    const newRef = doc(collection(db, "salePayments"));
-                    p.id = newRef.id; 
-                    transaction.set(newRef, p);
-                });
+            if (remainingCash > 0.1) {
+                const creditPayment: any = {
+                    saleId: `CREDIT_BALANCE_${id}`,
+                    date: new Date().toISOString(),
+                    amount: remainingCash,
+                    method: paymentMethod,
+                    createdByUserId: user.uid,
+                    notes: (paymentNotes || 'Avoir généré suite surplus') + ` (Surplus)`
+                };
+                if (paymentMethod === 'Mobile Money') {
+                    creditPayment.momoOperator = momoOperator;
+                    creditPayment.momoNumber = momoNumber;
+                }
+                await supabase.from('sale_payments').insert(creditPayment);
+                currentCreditBalance += remainingCash;
+            }
 
-                updatesToPerform.forEach(u => {
-                    transaction.update(u.ref, u.data);
-                });
-            });
+            if (currentCreditBalance !== (customerData.creditBalance || 0)) {
+                await supabase.from('customers').update({ creditBalance: currentCreditBalance }).eq('id', id);
+            }
 
-            // Capture des données pour le reçu avant réinitialisation
             const receiptAmount = paymentAmount;
             const receiptMethod = paymentMethod;
             const receiptNotes = paymentNotes;
             const receiptSaleId = selectedSaleId;
             const previousBalance = summary.balance;
 
-            // Réinitialiser le formulaire
             setIsPaymentModalOpen(false);
             setPaymentAmount(0);
             setPaymentNotes('');
@@ -576,17 +527,9 @@ interface AccountMovement {
             setPaymentMethod('Espèces');
             setUseCreditBalance(false);
             
-            // Rafraîchir les données
-            try {
-                await fetchAccountData(true);
-            } catch (err) {
-                console.error("Erreur lors du rafraîchissement des données:", err);
-            }
+            await fetchAccountData(true);
             
-            // Préparer le reçu
-            // On génère un ID temporaire pour l'affichage immédiat
             const tempReceiptId = `REC-${Date.now().toString().slice(-6)}`;
-            
             setLastPayment({
                 id: tempReceiptId,
                 saleId: receiptSaleId || 'MULTI_PAYMENT',
@@ -597,11 +540,8 @@ interface AccountMovement {
                 notes: receiptNotes
             } as SalePayment);
             
-            // Calculer le nouveau solde estimé pour affichage immédiat
             setLastPaymentBalance(previousBalance > receiptAmount ? previousBalance - receiptAmount : 0); 
-            
             setShowReceiptModal(true);
-
         } catch (err: any) {
             console.error("Erreur lors du paiement:", err);
             setError(err.message || "Une erreur est survenue lors du paiement");
@@ -709,11 +649,15 @@ interface AccountMovement {
                                                         onClick={() => {
                                                             const doReprint = async () => {
                                                                 try {
-                                                                    const pDoc = await getDoc(doc(db, 'salePayments', m.paymentId!));
-                                                                    if (pDoc.exists()) {
-                                                                        setPaymentToReprint({ id: pDoc.id, ...pDoc.data() } as SalePayment);
+                                                                    const { data: pData, error: pError } = await supabase
+                                                                        .from('sale_payments')
+                                                                        .select('*')
+                                                                        .eq('id', m.paymentId!)
+                                                                        .single();
+                                                                    
+                                                                    if (!pError && pData) {
+                                                                        setPaymentToReprint(pData as SalePayment);
                                                                     } else {
-                                                                        // Fallback if paymentId is not valid but we have data in m (less likely to happen for reprint full receipt)
                                                                         alert("Impossible de retrouver les détails complets du paiement.");
                                                                     }
                                                                 } catch (e) {
@@ -758,26 +702,93 @@ interface AccountMovement {
             </div>
 
             {/* Payment Modal */}
-            <Modal isOpen={isPaymentModalOpen} onClose={() => setIsPaymentModalOpen(false)} title="NOUVEAU RÈGLEMENT">
+            <Modal isOpen={isPaymentModalOpen} onClose={() => { setIsPaymentModalOpen(false); setSelectAllInvoices(false); setPaymentAmount(0); }} title="NOUVEAU RÈGLEMENT">
                 <form onSubmit={handleQuickPayment} className="space-y-5">
                     <div>
-                        <label className="block text-[10px] font-black uppercase text-gray-500 mb-1.5">Facture à régler</label>
-                        <select 
-                            value={selectedSaleId} 
-                            onChange={(e) => setSelectedSaleId(e.target.value)}
-                            className="w-full p-3 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl font-bold text-sm focus:ring-2 focus:ring-green-500 focus:border-transparent transition-all"
-                            required
-                        >
-                            <option value="">Sélectionner une facture...</option>
+                        <div className="flex items-center justify-between mb-2">
+                            <label className="block text-[10px] font-black uppercase text-gray-500">Factures à régler</label>
+                            <label className="flex items-center gap-2 cursor-pointer text-xs font-black text-primary-600 hover:text-primary-700 transition-colors select-none">
+                                <input
+                                    type="checkbox"
+                                    checked={selectAllInvoices}
+                                    onChange={(e) => {
+                                        setSelectAllInvoices(e.target.checked);
+                                        if (e.target.checked) {
+                                            setSelectedSaleId('');
+                                            const total = (openingBalanceRemaining > 0 ? openingBalanceRemaining : 0)
+                                                + unpaidSales.reduce((sum, s) => sum + (s.grandTotal - s.paidAmount), 0);
+                                            setPaymentAmount(Math.round(total));
+                                        } else {
+                                            setPaymentAmount(0);
+                                        }
+                                    }}
+                                    className="w-4 h-4 text-primary-600 rounded focus:ring-primary-500 border-gray-300 cursor-pointer"
+                                />
+                                <span>✅ Tout sélectionner ({formatCurrency(
+                                    (openingBalanceRemaining > 0 ? openingBalanceRemaining : 0)
+                                    + unpaidSales.reduce((sum, s) => sum + (s.grandTotal - s.paidAmount), 0)
+                                )})</span>
+                            </label>
+                        </div>
+                        <div className="space-y-2 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
                             {openingBalanceRemaining > 0 && (
-                                <option value={`OPENING_BALANCE_${id}`}>SOLDE D'OUVERTURE (Reste: {formatCurrency(openingBalanceRemaining)})</option>
+                                <label className={`flex items-center justify-between p-3 rounded-xl border-2 cursor-pointer transition-all select-none ${
+                                    selectAllInvoices || selectedSaleId === `OPENING_BALANCE_${id}`
+                                        ? 'border-orange-400 bg-orange-50 dark:bg-orange-900/20'
+                                        : 'border-gray-200 dark:border-gray-700 hover:border-orange-300'
+                                }`}>
+                                    <div className="flex items-center gap-3">
+                                        <input
+                                            type="checkbox"
+                                            checked={selectAllInvoices || selectedSaleId === `OPENING_BALANCE_${id}`}
+                                            onChange={(e) => {
+                                                if (selectAllInvoices) return;
+                                                setSelectedSaleId(e.target.checked ? `OPENING_BALANCE_${id}` : '');
+                                                if (e.target.checked) setPaymentAmount(Math.round(openingBalanceRemaining));
+                                            }}
+                                            className="w-4 h-4 text-orange-500 rounded focus:ring-orange-400 border-gray-300 cursor-pointer"
+                                        />
+                                        <div>
+                                            <p className="text-xs font-black uppercase text-orange-700 dark:text-orange-400">Solde d'ouverture</p>
+                                            <p className="text-[10px] text-gray-400">Antérieur</p>
+                                        </div>
+                                    </div>
+                                    <span className="text-sm font-black text-orange-600">{formatCurrency(openingBalanceRemaining)}</span>
+                                </label>
                             )}
-                            {unpaidSales.map(s => (
-                                <option key={s.id} value={s.id}>
-                                    Facture {s.referenceNumber} - Reste: {formatCurrency(s.grandTotal - s.paidAmount)}
-                                </option>
-                            ))}
-                        </select>
+                            {unpaidSales.map(s => {
+                                const remaining = s.grandTotal - s.paidAmount;
+                                const isChecked = selectAllInvoices || selectedSaleId === s.id;
+                                return (
+                                    <label key={s.id} className={`flex items-center justify-between p-3 rounded-xl border-2 cursor-pointer transition-all select-none ${
+                                        isChecked
+                                            ? 'border-green-400 bg-green-50 dark:bg-green-900/20'
+                                            : 'border-gray-200 dark:border-gray-700 hover:border-green-300'
+                                    }`}>
+                                        <div className="flex items-center gap-3">
+                                            <input
+                                                type="checkbox"
+                                                checked={isChecked}
+                                                onChange={(e) => {
+                                                    if (selectAllInvoices) return;
+                                                    setSelectedSaleId(e.target.checked ? s.id : '');
+                                                    if (e.target.checked) setPaymentAmount(Math.round(remaining));
+                                                }}
+                                                className="w-4 h-4 text-green-600 rounded focus:ring-green-500 border-gray-300 cursor-pointer"
+                                            />
+                                            <div>
+                                                <p className="text-xs font-black uppercase">{s.referenceNumber}</p>
+                                                <p className="text-[10px] text-gray-400">{new Date(s.date).toLocaleDateString('fr-FR')}</p>
+                                            </div>
+                                        </div>
+                                        <span className="text-sm font-black text-red-600">{formatCurrency(remaining)}</span>
+                                    </label>
+                                );
+                            })}
+                            {openingBalanceRemaining <= 0 && unpaidSales.length === 0 && (
+                                <p className="text-center text-sm text-gray-400 py-4">Aucune facture impayée.</p>
+                            )}
+                        </div>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

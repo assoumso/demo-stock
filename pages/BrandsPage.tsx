@@ -1,16 +1,15 @@
-import React, { useState, useEffect, FormEvent } from 'react';
-import { db } from '../firebase';
-import { collection, getDocs, doc, addDoc, updateDoc, deleteDoc, DocumentData, writeBatch } from 'firebase/firestore';
+import React, { useState, FormEvent } from 'react';
+import { supabase } from '../supabase';
 import { Brand } from '../types';
 import Modal from '../components/Modal';
 import { PlusIcon, EditIcon, DeleteIcon } from '../constants';
 import DropdownMenu, { DropdownMenuItem } from '../components/DropdownMenu';
 import { useAuth } from '../hooks/useAuth';
+import { useData } from '../context/DataContext';
 
 const BrandsPage: React.FC = () => {
     const { hasPermission } = useAuth();
-    const [items, setItems] = useState<Brand[]>([]);
-    const [loading, setLoading] = useState(true);
+    const { brands: items, loading, refreshData } = useData();
     const [error, setError] = useState<string | null>(null);
 
     // Selection State
@@ -21,22 +20,6 @@ const BrandsPage: React.FC = () => {
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [currentItem, setCurrentItem] = useState<Partial<Brand>>({});
     const [isEditing, setIsEditing] = useState(false);
-
-    const fetchData = async () => {
-        setLoading(true);
-        try {
-            const snap = await getDocs(collection(db, "brands"));
-            setItems(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Brand)));
-        } catch (err) {
-            setError("Impossible de charger les marques.");
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    useEffect(() => {
-        fetchData();
-    }, []);
 
     const openModalForNew = () => {
         setIsEditing(false);
@@ -58,14 +41,18 @@ const BrandsPage: React.FC = () => {
         if (!data.name) return;
 
         try {
-            if (isEditing) {
-                await updateDoc(doc(db, 'brands', id!), data as DocumentData);
+            if (isEditing && id) {
+                const { error } = await supabase.from('brands').update(data).eq('id', id);
+                if (error) throw error;
             } else {
-                await addDoc(collection(db, "brands"), data);
+                const newId = crypto.randomUUID();
+                const { error } = await supabase.from('brands').insert({ ...data, id: newId });
+                if (error) throw error;
             }
-            await fetchData();
             closeModal();
-        } catch (err) {
+            await refreshData(['config']);
+        } catch (err: any) {
+            console.error(err);
             setError("Erreur d'enregistrement.");
         }
     };
@@ -73,21 +60,27 @@ const BrandsPage: React.FC = () => {
     const handleDelete = async (id: string) => {
         if (window.confirm("Supprimer cette marque ?")) {
             try {
-                await deleteDoc(doc(db, "brands", id));
-                await fetchData();
-            } catch (err) {
+                const { error } = await supabase.from('brands').delete().eq('id', id);
+                if (error) throw error;
+                await refreshData(['config']);
+            } catch (err: any) {
+                console.error(err);
                 setError("Erreur de suppression.");
             }
         }
     };
     
     const handleBulkDelete = async () => {
-        const batch = writeBatch(db);
-        selectedIds.forEach(id => batch.delete(doc(db, 'brands', id)));
-        await batch.commit();
-        await fetchData();
-        setSelectedIds([]);
-        setIsBulkDeleteModalOpen(false);
+        try {
+            const { error } = await supabase.from('brands').delete().in('id', selectedIds);
+            if (error) throw error;
+            setIsBulkDeleteModalOpen(false);
+            setSelectedIds([]);
+            await refreshData(['config']);
+        } catch (err: any) {
+            console.error(err);
+            setError("Erreur lors de la suppression en masse.");
+        }
     };
 
     const handleSelectOne = (id: string) => {

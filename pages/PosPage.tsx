@@ -1,30 +1,101 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { db } from '../firebase';
-import { collection, getDocs, doc, runTransaction, addDoc, DocumentData, getDoc, DocumentReference, query, where } from 'firebase/firestore';
+import { supabase } from '../supabase';
 import { Product, Category, Customer, Warehouse, Sale, SaleItem, AppSettings, PaymentMethod } from '../types';
 import { useAuth } from '../hooks/useAuth';
+import { useData } from '../context/DataContext';
 import Modal from '../components/Modal';
-import { SearchIcon, DeleteIcon, WarningIcon } from '../constants';
+import { SearchIcon, DeleteIcon, WarningIcon, UserAddIcon, XIcon, WhatsappIcon } from '../constants';
 import { useReactToPrint } from 'react-to-print';
 import PosReceipt from '../components/PosReceipt';
 import { formatCurrency } from '../utils/formatters';
+import { shareInvoiceViaWhatsapp, normalizePhoneNumber } from '../utils/whatsappUtils';
 
+// Definition du composant de carte produit
+interface PosProductCardProps {
+    product: Product;
+    onAddToCart: (product: Product) => void;
+    inCart: number;
+    stock: number;
+    currentSettings?: Partial<AppSettings>;
+}
+
+const PosProductCard = React.memo(({
+    product,
+    onAddToCart,
+    inCart,
+    stock,
+    currentSettings
+}: PosProductCardProps) => {
+    const isOutOfStock = stock <= 0;
+    const currency = currentSettings?.currencySymbol || 'FCFA';
+    
+    return (
+        <div 
+            className={`bg-white dark:bg-gray-800 rounded-lg shadow-md p-3 cursor-pointer transition-all hover:shadow-lg flex flex-col justify-between h-full ${
+                isOutOfStock ? 'opacity-50' : 'hover:scale-105'
+            }`}
+            onClick={() => !isOutOfStock && onAddToCart(product)}
+        >
+            <div>
+                <div className="aspect-square bg-gray-100 dark:bg-gray-700 rounded-lg mb-2 flex items-center justify-center overflow-hidden">
+                    {product.imageUrl ? (
+                        <img src={product.imageUrl} alt={product.name} className="h-full w-full object-cover"/>
+                    ) : (
+                        <span className="text-2xl">📦</span>
+                    )}
+                </div>
+                <h3 className="font-bold text-xs mb-1 text-gray-800 dark:text-white line-clamp-2 leading-tight min-h-[2.5em]">
+                    {product.name}
+                </h3>
+                <p className="text-[10px] text-gray-500 dark:text-gray-400 mb-2 font-mono truncate">
+                    {product.sku}
+                </p>
+            </div>
+            <div className="flex justify-between items-end mt-auto">
+                <span className="font-black text-sm text-primary-600">
+                    {formatCurrency(product.price, currency)}
+                </span>
+                <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${
+                    isOutOfStock 
+                        ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+                        : stock <= 10 
+                        ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200'
+                        : 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
+                }`}>
+                    {isOutOfStock ? 'Rupture' : `${stock}`}
+                </span>
+            </div>
+            {inCart > 0 && (
+                <div className="mt-2 bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 text-[9px] px-2 py-0.5 rounded text-center font-bold">
+                    Panier: {inCart}
+                </div>
+            )}
+        </div>
+    );
+});
+
+PosProductCard.displayName = 'PosProductCard';
 
 const PosPage: React.FC = () => {
     const { user } = useAuth();
+    const { 
+        products, 
+        categories, 
+        customers, 
+        warehouses, 
+        settings, 
+        loading: contextLoading,
+        productsLoading,
+        customersLoading,
+        refreshData 
+    } = useData();
 
-    // Data from Firestore
-    const [products, setProducts] = useState<Product[]>([]);
-    const [categories, setCategories] = useState<Category[]>([]);
-    const [customers, setCustomers] = useState<Customer[]>([]);
-    const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
-    const [settings, setSettings] = useState<Partial<AppSettings>>({});
-    
     // UI State
-    const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedCategory, setSelectedCategory] = useState('all');
+    const [isStockAlertOpen, setIsStockAlertOpen] = useState(false);
+    const [stockAlertMessage, setStockAlertMessage] = useState('');
 
     // POS State
     const [cart, setCart] = useState<SaleItem[]>([]);
@@ -46,48 +117,45 @@ const PosPage: React.FC = () => {
     const [lastSale, setLastSale] = useState<Sale | null>(null);
     const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
     const receiptRef = useRef<HTMLDivElement>(null);
+    
+    // Customer Search State
+    const [customerSearchTerm, setCustomerSearchTerm] = useState('');
+    const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
+    
+    // Local product cache override for immediate UI updates
+    const [localProductUpdates, setLocalProductUpdates] = useState<Map<string, Product>>(new Map());
 
-
+    // Initialize default customer when settings or customers load
     useEffect(() => {
-        const fetchData = async () => {
-            setLoading(true);
-            setError(null);
-            try {
-                const [prodSnap, catSnap, custSnap, whSnap, settingsSnap] = await Promise.all([
-                    getDocs(collection(db, "products")),
-                    getDocs(collection(db, "categories")),
-                    getDocs(collection(db, "customers")),
-                    getDocs(collection(db, "warehouses")),
-                    getDoc(doc(db, "settings", "app-config")),
-                ]);
-                
-                setProducts(prodSnap.docs.map(d => ({ id: d.id, ...d.data() } as Product)));
-                setCategories(catSnap.docs.map(d => ({ id: d.id, ...d.data() } as Category)));
-                
-                const customersData = custSnap.docs.map(d => ({ id: d.id, ...d.data() } as Customer));
-                setCustomers(customersData);
-                
-                const warehousesData = whSnap.docs.map(d => ({ id: d.id, ...d.data() } as Warehouse));
-                setWarehouses(warehousesData);
-                
-                const appSettings: Partial<AppSettings> = settingsSnap.exists() ? settingsSnap.data() as AppSettings : {};
-                setSettings(appSettings);
-                
-                const defaultCustomerId = appSettings.defaultPosCustomerId || 'walkin';
-                setSelectedCustomerId(defaultCustomerId);
-
-            } catch (err) {
-                setError("Impossible de charger les données du POS.");
-                console.error(err);
-            } finally {
-                setLoading(false);
-            }
-        };
-
-        if (user) {
-            fetchData();
+        if (settings && !selectedCustomerId) {
+             const defaultCustomerId = settings.defaultPosCustomerId || 'walkin';
+             setSelectedCustomerId(defaultCustomerId);
+             const defaultCustomer = customers.find(c => c.id === defaultCustomerId);
+             if (defaultCustomer) {
+                 setCustomerSearchTerm(defaultCustomer.name);
+             } else if (defaultCustomerId === 'walkin') {
+                 setCustomerSearchTerm('Client de passage');
+             }
         }
-    }, [user]);
+    }, [settings, selectedCustomerId, customers]);
+
+    const activeCustomers = useMemo(() => {
+        return customers.filter(c => !c.isArchived);
+    }, [customers]);
+
+    const filteredCustomers = useMemo(() => {
+        if (!customerSearchTerm) return activeCustomers.slice(0, 10);
+        return activeCustomers.filter(c => 
+            c.name.toLowerCase().includes(customerSearchTerm.toLowerCase()) || 
+            (c.phone && c.phone.includes(customerSearchTerm))
+        ).slice(0, 10);
+    }, [customerSearchTerm, activeCustomers]);
+
+    const isLoading = contextLoading || productsLoading || customersLoading;
+    const currentSettings: Partial<AppSettings> = settings || {};
+
+    const productMap = useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
+    const customerMap = useMemo(() => new Map(customers.map(c => [c.id, c])), [customers]);
 
     useEffect(() => {
         const fetchBalance = async () => {
@@ -98,25 +166,28 @@ const PosPage: React.FC = () => {
             }
             try {
                 // Récupérer le crédit du client
-                const customer = customers.find(c => c.id === selectedCustomerId);
+                const customer = customerMap.get(selectedCustomerId);
                 setCustomerCredit(customer?.creditBalance || 0);
 
-                const q = query(collection(db, "sales"), where("customerId", "==", selectedCustomerId));
-                const snap = await getDocs(q);
+                const { data: sales, error: fetchError } = await supabase
+                    .from('sales')
+                    .select('grandTotal, paidAmount')
+                    .eq('customerId', selectedCustomerId)
+                    .neq('paymentStatus', 'Payé');
+                
+                if (fetchError) throw fetchError;
+                
                 let totalUnpaid = 0;
-                snap.docs.forEach(doc => {
-                    const sale = doc.data() as Sale;
-                    if (sale.paymentStatus !== 'Payé') {
-                        totalUnpaid += (sale.grandTotal - (sale.paidAmount || 0));
-                    }
+                (sales || []).forEach((sale) => {
+                    totalUnpaid += (sale.grandTotal - (sale.paidAmount || 0));
                 });
                 setCustomerBalance(totalUnpaid);
             } catch (e) {
-                console.warn("Erreur calcul solde client POS");
+                console.warn("Erreur calcul solde client POS", e);
             }
         };
         fetchBalance();
-    }, [selectedCustomerId]);
+    }, [selectedCustomerId, customerMap]);
 
     const userVisibleWarehouses = useMemo(() => {
         if (!user || !user.role) return [];
@@ -126,6 +197,21 @@ const PosPage: React.FC = () => {
         }
         return warehouses.filter(wh => userWarehouseIds.includes(wh.id));
     }, [user, warehouses]);
+
+    useEffect(() => {
+        // Clean up cart if any products no longer exist
+        const cleanedCart = cart.filter(item => {
+            const product = productMap.get(item.productId);
+            return product && !product.isArchived;
+        });
+
+        if (cleanedCart.length !== cart.length) {
+            setCart(cleanedCart);
+            if (cleanedCart.length === 0) {
+                setError("Certains produits du panier ont été supprimés. Panier vidé.");
+            }
+        }
+    }, [products]); // Re-run when products list changes
     
     useEffect(() => {
         if (userVisibleWarehouses.length > 0) {
@@ -139,18 +225,56 @@ const PosPage: React.FC = () => {
     }, [userVisibleWarehouses, selectedWarehouseId]);
 
     const getStock = (productId: string) => {
-        const product = products.find(p => p.id === productId);
+        const product = productMap.get(productId);
         if (product?.type === 'service') return Infinity;
         return product?.stockLevels?.find(sl => sl.warehouseId === selectedWarehouseId)?.quantity || 0;
     };
 
+    const cartMap = useMemo(() => {
+        const map = new Map<string, number>();
+        cart.forEach(item => map.set(item.productId, item.quantity));
+        return map;
+    }, [cart]);
+
     const filteredProducts = useMemo(() => {
-        return products.filter(p => {
-            const searchMatch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || p.sku.toLowerCase().includes(searchTerm.toLowerCase());
-            const categoryMatch = selectedCategory === 'all' || p.categoryId === selectedCategory;
+        const filtered = products.filter(p => {
+            if (!p) return false;
+            if (p.isArchived) return false; // Exclude archived products
+            const pName = (p.name || '').toLowerCase();
+            const pSku = (p.sku || '').toLowerCase();
+            const searchLower = searchTerm.toLowerCase();
+
+            const searchMatch = pName.includes(searchLower) || pSku.includes(searchLower);
+            const categoryMatch = selectedCategory === 'all' || (p.categoryId === selectedCategory);
+
             return searchMatch && categoryMatch;
         });
+        return filtered;
     }, [products, searchTerm, selectedCategory]);
+
+    // PRÉ-CALCUL DES STOCKS ET PANIER - OPTIMISATION PERFORMANCE
+    const productsStockMap = useMemo(() => {
+        const map = new Map();
+        filteredProducts.forEach(product => {
+            // Check if there's a local optimistic update for this product
+            const localProduct = localProductUpdates.get(product.id) || product;
+            
+            // Logique de calcul du stock intégrée pour éviter les dépendances externes instables
+            let quantity = 0;
+            if (localProduct && localProduct.stockLevels) {
+                // Si une boutique est sélectionnée, on prend le stock de cette boutique
+                if (selectedWarehouseId) {
+                    const level = localProduct.stockLevels.find(sl => sl.warehouseId === selectedWarehouseId);
+                    quantity = level ? level.quantity : 0;
+                } else {
+                    // Sinon on somme tous les stocks (ou on prend le stock global si disponible)
+                    quantity = localProduct.stockLevels.reduce((sum, sl) => sum + (sl.quantity || 0), 0);
+                }
+            }
+            map.set(product.id, quantity);
+        });
+        return map;
+    }, [filteredProducts, selectedWarehouseId, localProductUpdates]);
 
     const removeFromCart = (productId: string) => {
         setCart(prev => prev.filter(item => item.productId !== productId));
@@ -158,7 +282,11 @@ const PosPage: React.FC = () => {
 
     const updateCartItem = (productId: string, quantity: number) => {
         const stock = getStock(productId);
+        const product = productMap.get(productId);
+
         if (quantity > stock) {
+            setStockAlertMessage(`Stock insuffisant pour "${product?.name || 'Produit'}". Disponible: ${stock}, Demandé: ${quantity}`);
+            setIsStockAlertOpen(true);
             quantity = stock;
         }
 
@@ -191,16 +319,23 @@ const PosPage: React.FC = () => {
         if (existingItem) {
             if (existingItem.quantity < stock) {
                 updateCartItem(product.id, existingItem.quantity + 1);
+            } else {
+                setStockAlertMessage(`Stock insuffisant pour "${product.name}". Disponible: ${stock}`);
+                setIsStockAlertOpen(true);
             }
         } else {
             if (stock > 0) {
                 const newItem: SaleItem = {
                     productId: product.id,
+                    productName: product.name,
                     quantity: 1,
                     price: product.price,
                     subtotal: product.price,
                 };
                 setCart(prev => [...prev, newItem]);
+            } else {
+                setStockAlertMessage(`Stock insuffisant pour "${product.name}". Disponible: ${stock}`);
+                setIsStockAlertOpen(true);
             }
         }
     };
@@ -231,8 +366,7 @@ const PosPage: React.FC = () => {
         setLastSale(null);
         setIsReceiptModalOpen(false);
         try {
-            const prodSnap = await getDocs(collection(db, "products"));
-            setProducts(prodSnap.docs.map(d => ({ id: d.id, ...d.data() } as Product)));
+            await refreshData(['products', 'sales', 'customers']);
         } catch (err) {
             console.error("Failed to refetch products after sale:", err);
             setError("Impossible de mettre à jour les stocks.");
@@ -249,8 +383,8 @@ const PosPage: React.FC = () => {
             setError("Opérateur et numéro requis pour Mobile Money.");
             return;
         }
-        
-        const selectedCustomer = customers.find(c => c.id === selectedCustomerId);
+
+        const selectedCustomer = activeCustomers.find(c => c.id === selectedCustomerId);
         if (selectedCustomer?.isCreditLimited) {
             const projectedDebt = customerBalance + (cartTotal - amountTendered);
             if (projectedDebt > (selectedCustomer.creditLimit || 0)) {
@@ -261,9 +395,11 @@ const PosPage: React.FC = () => {
         }
 
         setError(null);
-        
-        const saleData: any = {
-            referenceNumber: `${settings.saleInvoicePrefix || 'POS-'}${Date.now()}`,
+
+        const saleId = crypto.randomUUID();
+        let saleData: any = {
+            id: saleId,
+            referenceNumber: `${currentSettings.saleInvoicePrefix || 'POS-'}${Date.now()}`,
             date: new Date().toISOString(),
             customerId: selectedCustomerId,
             warehouseId: selectedWarehouseId,
@@ -275,93 +411,169 @@ const PosPage: React.FC = () => {
         };
 
         try {
-            const newSaleRef = await runTransaction(db, async (transaction) => {
-                const productRefs = cart.map(item => doc(db, 'products', item.productId));
-                const productDocs = await Promise.all(productRefs.map(ref => transaction.get(ref)));
-                const updates: { ref: DocumentReference<DocumentData>, data: { stockLevels: any[] } }[] = [];
+            // 0. Validate products and fetch fresh data
+            const productIds = cart.map(i => i.productId);
+            const { data: freshProducts, error: fetchError } = await supabase
+                .from('products')
+                .select('*')
+                .in('id', productIds);
+            
+            if (fetchError || !freshProducts) throw fetchError || new Error("Impossible de récupérer les produits");
 
-                for (let i = 0; i < cart.length; i++) {
-                    const item = cart[i];
-                    const productDoc = productDocs[i];
-                    if (!productDoc.exists()) throw new Error(`Produit "${item.productId}" non trouvé.`);
+            // Check for missing products and clean up cart
+            const validCartItems = [];
+            const missingProductIds = [];
 
-                    const productData = productDoc.data() as Product;
-                    if (productData.type === 'service') continue;
-
-                    const stockLevels = [...(productData.stockLevels || [])];
-                    const whIndex = stockLevels.findIndex(sl => sl.warehouseId === selectedWarehouseId);
-                    if (whIndex === -1 || stockLevels[whIndex].quantity < item.quantity) {
-                        throw new Error(`Stock insuffisant pour ${productData.name}. Disponible: ${whIndex > -1 ? stockLevels[whIndex].quantity : 0}, Demandé: ${item.quantity}`);
-                    }
-                    stockLevels[whIndex].quantity -= item.quantity;
-                    updates.push({ ref: productRefs[i], data: { stockLevels } });
+            for (const item of cart) {
+                const product = freshProducts.find(p => p.id === item.productId);
+                if (!product) {
+                    missingProductIds.push(item.productId);
+                } else {
+                    validCartItems.push(item);
                 }
-
-                for (const update of updates) transaction.update(update.ref, update.data);
-                const saleRef = doc(collection(db, "sales"));
-                transaction.set(saleRef, saleData as DocumentData);
-
-                // Gestion du paiement avec crédit client
-            if (amountTendered > 0) {
-                let paymentAmount = amountTendered;
-                let finalPaymentMethod = paymentMethod;
-                let usedCredit = 0;
-
-                // Si paiement par crédit, vérifier et déduire du crédit disponible
-                if (paymentMethod === 'Compte Avoir' && selectedCustomerId && selectedCustomerId !== 'walkin') {
-                    const customerRef = doc(db, "customers", selectedCustomerId);
-                    const customerSnap = await transaction.get(customerRef);
-                    
-                    if (customerSnap.exists()) {
-                        const customerData = customerSnap.data() as Customer;
-                        const availableCredit = customerData.creditBalance || 0;
-                        
-                        if (paymentAmount > availableCredit) {
-                            throw new Error(`Crédit insuffisant. Disponible: ${formatCurrency(availableCredit)}`);
-                        }
-                        
-                        usedCredit = paymentAmount;
-                        const newCreditBalance = availableCredit - usedCredit;
-                        transaction.update(customerRef, { creditBalance: newCreditBalance });
-                    }
-                }
-
-                const pData: any = {
-                    saleId: saleRef.id,
-                    date: new Date().toISOString(),
-                    amount: paymentAmount,
-                    method: finalPaymentMethod,
-                    createdByUserId: user.uid
-                };
-                if (finalPaymentMethod === 'Mobile Money') {
-                    pData.momoOperator = momoOperator;
-                    pData.momoNumber = momoNumber;
-                }
-                transaction.set(doc(collection(db, "salePayments")), pData);
             }
 
-                return saleRef;
-            });
+            if (missingProductIds.length > 0) {
+                setCart(validCartItems);
+                setError("Certains produits ont été supprimés. Panier mis à jour.");
+                return;
+            }
+
+            // 1. Process updates sequentially (Simulating a transaction)
+            const updates = [];
+            for (const item of validCartItems) {
+                const product = freshProducts.find(p => p.id === item.productId);
+                if (!product || product.type === 'service') continue;
+
+                const stockLevels = [...(product.stockLevels || [])];
+                const whIndex = stockLevels.findIndex((sl: any) => sl.warehouseId === selectedWarehouseId);
+                
+                if (whIndex === -1 || stockLevels[whIndex].quantity < item.quantity) {
+                    throw new Error(`Stock insuffisant pour ${product.name}. Disponible: ${whIndex > -1 ? stockLevels[whIndex].quantity : 0}, Demandé: ${item.quantity}`);
+                }
+                
+                stockLevels[whIndex].quantity -= item.quantity;
+                updates.push({ id: product.id, stockLevels });
+            }
+
+            // A. Update Stock
+            for (const update of updates) {
+                const { error: updateError } = await supabase
+                    .from('products')
+                    .update({ stockLevels: update.stockLevels })
+                    .eq('id', update.id);
+                if (updateError) throw updateError;
+            }
+
+            // B. Create Sale
+            const { error: saleError } = await supabase
+                .from('sales')
+                .insert(saleData);
+            if (saleError) throw saleError;
+
+            // C. Update Customer credit if paying with account balance
+            if (amountTendered > 0 && paymentMethod === 'Compte Avoir' && selectedCustomerId && selectedCustomerId !== 'walkin') {
+                const { data: custData, error: custFetchError } = await supabase
+                    .from('customers')
+                    .select('creditBalance')
+                    .eq('id', selectedCustomerId)
+                    .single();
+                
+                if (!custFetchError && custData) {
+                    const availableCredit = custData.creditBalance || 0;
+                    if (amountTendered <= availableCredit) {
+                        const newCreditBalance = availableCredit - amountTendered;
+                        await supabase
+                            .from('customers')
+                            .update({ creditBalance: newCreditBalance })
+                            .eq('id', selectedCustomerId);
+                    }
+                }
+            }
+
+            // D. Create Payment record
+            if (amountTendered > 0) {
+                const paymentId = crypto.randomUUID();
+                const pData: any = {
+                    id: paymentId,
+                    saleId: saleId,
+                    date: new Date().toISOString(),
+                    amount: amountTendered,
+                    method: paymentMethod,
+                    createdByUserId: user.uid,
+                    momoOperator: paymentMethod === 'Mobile Money' ? momoOperator : null,
+                    momoNumber: paymentMethod === 'Mobile Money' ? momoNumber : null
+                };
+
+                await supabase.from('sale_payments').insert(pData);
+            }
             
-            setLastSale({ id: newSaleRef.id, ...saleData });
+            setLastSale(saleData);
             setIsPaymentModalOpen(false);
             setIsReceiptModalOpen(true);
+            
+            // Optimistic update
+            const optimisticUpdates = new Map(localProductUpdates);
+            for (const update of updates) {
+                const currentProduct = products.find(p => p.id === update.id);
+                if (currentProduct) {
+                    optimisticUpdates.set(update.id, { ...currentProduct, stockLevels: update.stockLevels });
+                }
+            }
+            setLocalProductUpdates(optimisticUpdates);
+            
+            setTimeout(async () => {
+                await refreshData(['products', 'sales', 'customers']);
+                setLocalProductUpdates(new Map());
+            }, 1000);
+
         } catch (err: any) {
             setError(`Échec de la vente: ${err.message}`);
             setIsPaymentModalOpen(false);
         }
     };
-    
-    if (loading) return <div className="p-12 text-center animate-pulse uppercase font-black text-gray-400">Chargement...</div>;
 
-    const currentCustomerObj = customers.find(c => c.id === selectedCustomerId);
+    const handleShareReceipt = async () => {
+        if (!lastSale || !settings) return;
+
+        const customer = activeCustomers.find(c => c.id === lastSale.customerId);
+        // Utiliser le téléphone du client ou demander
+        let targetPhone = customer?.whatsapp || customer?.phone;
+        
+        if (!targetPhone) {
+             const input = prompt("Entrez le numéro WhatsApp du client (ex: 229XXXXXXXX):");
+             if (!input) return;
+             targetPhone = input;
+        }
+
+        const cleanPhone = normalizePhoneNumber(targetPhone);
+        const message = `*${settings.companyName || 'ETS COUL & FRERES'}*\n\nMerci de votre visite !\nVoici votre ticket *${lastSale.referenceNumber}*.\nMontant: ${formatCurrency(lastSale.grandTotal)}\n\nA bientôt !`;
+
+        try {
+            await shareInvoiceViaWhatsapp({
+                elementId: 'pos-receipt-capture',
+                filename: `Ticket_${lastSale.referenceNumber}.pdf`,
+                phone: cleanPhone,
+                message: message
+            });
+        } catch (error) {
+            console.error("Erreur partage WhatsApp:", error);
+            alert("Erreur lors du partage.");
+        }
+    };
+    
+    if (isLoading) return <div className="p-12 text-center animate-pulse uppercase font-black text-gray-400">Chargement...</div>;
+    
+    if (error) return <div className="p-12 text-center text-red-500 font-semibold">Erreur: {error}</div>;
+
+    const currentCustomerObj = customerMap.get(selectedCustomerId);
     const showCreditWarning = currentCustomerObj?.isCreditLimited && (customerBalance + cartTotal) > (currentCustomerObj.creditLimit || 0);
 
     return (
         <div className="flex h-[calc(100vh-64px)] overflow-hidden bg-gray-100 dark:bg-gray-900">
             {/* Main Content - Products */}
-            <div className="flex-1 overflow-y-auto p-4">
-                <div className="sticky top-0 bg-gray-100 dark:bg-gray-900 z-10 py-2 -mx-4 px-4">
+            <div className="flex-1 flex flex-col h-full overflow-hidden p-4">
+                <div className="flex-shrink-0 bg-gray-100 dark:bg-gray-900 z-10 py-2">
                     {showCreditWarning && (
                         <div className="bg-red-500 text-white px-4 py-2 rounded-xl mb-4 text-xs font-bold uppercase tracking-widest flex items-center shadow-lg animate-pulse">
                             <WarningIcon className="w-4 h-4 mr-2" />
@@ -375,9 +587,17 @@ const PosPage: React.FC = () => {
                                 placeholder="Rechercher des produits..."
                                 value={searchTerm}
                                 onChange={e => setSearchTerm(e.target.value)}
-                                className="w-full pl-10 pr-4 py-2 border rounded-full dark:bg-gray-800 dark:border-gray-700"
+                                className="w-full pl-10 pr-12 py-2 border rounded-full dark:bg-gray-800 dark:border-gray-700"
                             />
                             <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                            {searchTerm && (
+                                <button
+                                    onClick={() => setSearchTerm('')}
+                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                                >
+                                    <XIcon className="w-4 h-4" />
+                                </button>
+                            )}
                         </div>
                         <select
                             value={selectedWarehouseId}
@@ -389,196 +609,293 @@ const PosPage: React.FC = () => {
                             ))}
                         </select>
                     </div>
-                     <div className="flex flex-wrap gap-2">
+                     <div className="flex flex-wrap gap-2 pb-2">
                         <button onClick={() => setSelectedCategory('all')} className={`px-3 py-1 text-sm font-bold rounded-full ${selectedCategory === 'all' ? 'bg-primary-600 text-white' : 'bg-white dark:bg-gray-700'}`}>Toutes</button>
                         {categories.map(cat => (
                              <button key={cat.id} onClick={() => setSelectedCategory(cat.id)} className={`px-3 py-1 text-sm font-bold rounded-full ${selectedCategory === cat.id ? 'bg-primary-600 text-white' : 'bg-white dark:bg-gray-700'}`}>{cat.name}</button>
                         ))}
+                        <div className="ml-auto text-xs text-gray-500 font-mono">
+                            {filteredProducts.length}/{products.length} produits
+                        </div>
                     </div>
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 mt-4">
-                    {filteredProducts.map(product => {
-                        const stock = getStock(product.id);
-                        const inCartQty = cart.find(i => i.productId === product.id)?.quantity || 0;
-                        const availableStock = stock - inCartQty;
-                        
-                        return (
-                            <div key={product.id} onClick={() => (product.type === 'service' || availableStock > 0) && addToCart(product)} 
-                                className={`relative border rounded-xl p-2 cursor-pointer text-center transition-all bg-white dark:bg-gray-800 ${(product.type !== 'service' && availableStock <= 0) ? 'opacity-50 cursor-not-allowed' : 'hover:shadow-2xl hover:-translate-y-1 hover:border-primary-500'}`}>
-                                {product.imageUrl ? (
-                                    <img src={product.imageUrl} alt={product.name} className="h-24 w-full object-cover rounded-lg"/>
-                                ) : (
-                                    <div className="h-24 w-full bg-gray-50 dark:bg-gray-700 rounded-lg flex items-center justify-center text-gray-400 text-[10px] font-black uppercase">Article</div>
-                                )}
-                                <p className="text-[11px] font-black mt-2 h-8 overflow-hidden uppercase tracking-tighter text-gray-700 dark:text-gray-300">{product.name}</p>
-                                <p className="text-sm font-black text-primary-600">{product.price.toLocaleString('fr-FR')} <span className="text-[10px]">{settings.currencySymbol || 'FCFA'}</span></p>
-                                {product.type === 'service' ? (
-                                    <span className={`absolute top-1 right-1 text-[9px] font-black uppercase px-2 py-0.5 rounded-full text-white bg-blue-500`}>
-                                        Svc
-                                    </span>
-                                ) : (
-                                    <span className={`absolute top-1 right-1 text-[9px] font-black uppercase px-2 py-0.5 rounded-full text-white ${availableStock > (product.minStockAlert || 5) ? 'bg-green-500' : availableStock > 0 ? 'bg-yellow-500' : 'bg-red-500'}`}>
-                                        {stock}
-                                    </span>
-                                )}
+                <div className="flex-1 min-h-0 overflow-y-auto">
+                    <div className="p-4">
+                        {filteredProducts.length === 0 ? (
+                            <div className="flex items-center justify-center h-64 text-gray-500">
+                                <div className="text-center">
+                                    {products.length === 0 ? (
+                                        <>
+                                            <p className="text-lg font-semibold">Aucun produit dans la base de données</p>
+                                            <p className="text-sm">Veuillez ajouter des produits depuis la page "Produits"</p>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <p className="text-lg font-semibold">Aucun produit trouvé</p>
+                                            <p className="text-sm">Essayez de modifier vos filtres de recherche</p>
+                                            <p className="text-xs mt-2 text-gray-400">Total produits: {products.length}</p>
+                                        </>
+                                    )}
+                                </div>
                             </div>
-                        )
-                    })}
+                        ) : (
+                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                                {filteredProducts.map(product => (
+                                    <PosProductCard
+                                        key={product.id}
+                                        product={product}
+                                        onAddToCart={addToCart}
+                                        inCart={cartMap.get(product.id) || 0}
+                                        stock={productsStockMap.get(product.id) || 0}
+                                        currentSettings={currentSettings}
+                                    />
+                                ))}
+                            </div>
+                        )}
+                    </div>
                 </div>
             </div>
 
-            {/* Cart Sidebar */}
-            <div className="w-96 bg-white dark:bg-gray-800 border-l dark:border-gray-700 flex flex-col p-4 shadow-2xl">
-                <h2 className="text-lg font-black uppercase tracking-widest text-gray-500 mb-4">Commande</h2>
-                <div className="flex flex-col gap-2 mb-4">
-                    <select value={selectedCustomerId} onChange={e => setSelectedCustomerId(e.target.value)} className="w-full p-3 border rounded-xl dark:bg-gray-700 dark:border-gray-600 font-bold outline-none focus:ring-2 focus:ring-primary-500">
-                        <option value="walkin">Client de passage</option>
-                        {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                    </select>
-                    {currentCustomerObj && selectedCustomerId !== 'walkin' && (
-                        <div className="bg-gray-50 dark:bg-gray-900/40 p-3 rounded-xl border border-gray-100 dark:border-gray-700">
-                            <div className="flex justify-between text-[10px] font-black uppercase text-gray-400">
-                                <span>Crédit Actuel</span>
-                                <span className={customerBalance > 0 ? 'text-red-500' : ''}>{formatCurrency(customerBalance)}</span>
-                            </div>
-                            {currentCustomerObj.isCreditLimited && (
-                                <div className="flex justify-between text-[10px] font-black uppercase text-orange-500 mt-1">
-                                    <span>Limite Max</span>
-                                    <span>{formatCurrency(currentCustomerObj.creditLimit || 0)}</span>
-                                </div>
+            {/* Sidebar - Cart */}
+            <div className="w-96 bg-white dark:bg-gray-800 shadow-xl flex flex-col border-l dark:border-gray-700">
+                <div className="p-4 border-b dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
+                    <h2 className="text-xl font-black uppercase tracking-widest text-gray-800 dark:text-white flex items-center gap-2">
+                        <span>🛒</span> Panier
+                    </h2>
+                     <div className="mt-2 relative">
+                        <label className="text-xs font-bold uppercase text-gray-500">Client</label>
+                        <div className="relative">
+                            <input
+                                type="text"
+                                value={customerSearchTerm}
+                                onChange={(e) => {
+                                    setCustomerSearchTerm(e.target.value);
+                                    setShowCustomerDropdown(true);
+                                    if (e.target.value === '') {
+                                        setSelectedCustomerId('');
+                                    }
+                                }}
+                                onFocus={() => setShowCustomerDropdown(true)}
+                                placeholder="Rechercher un client..."
+                                className="w-full p-2 pr-8 border rounded mt-1 text-sm font-bold dark:bg-gray-700 dark:border-gray-600 focus:ring-2 focus:ring-primary-500"
+                            />
+                            {customerSearchTerm && (
+                                <button 
+                                    onClick={() => {
+                                        setCustomerSearchTerm('');
+                                        setSelectedCustomerId('');
+                                        setShowCustomerDropdown(true);
+                                    }}
+                                    className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                                >
+                                    <XIcon className="w-4 h-4" />
+                                </button>
                             )}
                         </div>
-                    )}
+                        
+                        {showCustomerDropdown && (
+                            <div className="absolute z-50 w-full mt-1 bg-white dark:bg-gray-800 border dark:border-gray-700 rounded-lg shadow-xl max-h-60 overflow-y-auto">
+                                <div 
+                                    className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer text-sm font-bold border-b dark:border-gray-700"
+                                    onClick={() => {
+                                        setSelectedCustomerId('walkin');
+                                        setCustomerSearchTerm('Client de passage');
+                                        setShowCustomerDropdown(false);
+                                    }}
+                                >
+                                    Client de passage
+                                </div>
+                                {filteredCustomers.map(c => (
+                                    <div 
+                                        key={c.id} 
+                                        onClick={() => {
+                                            setSelectedCustomerId(c.id);
+                                            setCustomerSearchTerm(c.name);
+                                            setShowCustomerDropdown(false);
+                                        }}
+                                        className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer text-sm"
+                                    >
+                                        <div className="font-bold text-gray-900 dark:text-white">{c.name}</div>
+                                        {c.businessName && <div className="text-xs text-gray-500">{c.businessName}</div>}
+                                        {c.phone && <div className="text-xs text-gray-400">{c.phone}</div>}
+                                    </div>
+                                ))}
+                                {filteredCustomers.length === 0 && (
+                                    <div className="p-4 text-center text-gray-400 text-xs">Aucun client trouvé</div>
+                                )}
+                            </div>
+                        )}
+                        
+                         {customerBalance > 0 && selectedCustomerId !== 'walkin' && (
+                            <div className="text-xs text-red-500 font-bold mt-1 text-right">
+                                Dette: {formatCurrency(customerBalance)}
+                            </div>
+                        )}
+                    </div>
                 </div>
-                
-                <div className="flex-grow overflow-y-auto -mx-4 px-4 divide-y divide-gray-200 dark:divide-gray-700">
+
+                <div className="flex-1 overflow-y-auto p-4 space-y-3">
                     {cart.length === 0 ? (
-                        <div className="text-center py-12 opacity-30">
-                            <p className="text-sm font-black uppercase tracking-widest">Panier Vide</p>
+                        <div className="text-center text-gray-400 mt-10">
+                            <p className="text-4xl mb-2">🛍️</p>
+                            <p className="text-sm font-bold uppercase">Panier vide</p>
                         </div>
                     ) : (
                         cart.map(item => {
                             const product = products.find(p => p.id === item.productId);
-                            if (!product) return null;
-                            const stock = getStock(product.id);
                             return (
-                                <div key={item.productId} className="flex items-center gap-2 py-4">
-                                    <div className="flex-grow">
-                                        <p className="text-xs font-black uppercase truncate text-gray-800 dark:text-gray-200" title={product.name}>{product.name}</p>
-                                        <div className="flex items-center mt-1">
-                                            <input
-                                                type="number"
-                                                value={item.price}
-                                                onChange={(e) => updateCartItemPrice(item.productId, parseFloat(e.target.value) || 0)}
-                                                className="w-20 text-[11px] p-1 border rounded bg-gray-50 dark:bg-gray-700 font-bold"
+                                <div key={item.productId} className="flex justify-between items-center bg-gray-50 dark:bg-gray-700 p-3 rounded-lg border border-gray-100 dark:border-gray-600">
+                                    <div className="flex-1">
+                                        <p className="font-bold text-sm text-gray-800 dark:text-gray-200">{product?.name}</p>
+                                        <div className="text-xs text-gray-500 mt-1 flex items-center gap-2">
+                                            <span>{item.quantity} x </span>
+                                            <input 
+                                                type="number" 
+                                                min="0"
+                                                step="any"
+                                                value={item.price} 
+                                                onChange={(e) => updateCartItemPrice(item.productId, parseFloat(e.target.value))}
+                                                className="w-20 p-1 border rounded text-xs font-bold bg-white dark:bg-gray-600 dark:text-white dark:border-gray-500"
                                             />
                                         </div>
                                     </div>
-                                    <div className="flex items-center gap-1">
-                                        <button onClick={() => updateCartItem(item.productId, item.quantity - 1)} className="w-7 h-7 rounded-full bg-gray-100 dark:bg-gray-700 font-black">-</button>
-                                        <input 
-                                            type="number"
-                                            value={item.quantity}
-                                            onChange={(e) => updateCartItem(item.productId, parseInt(e.target.value) || 0)}
-                                            className="w-10 text-center bg-transparent font-black text-sm"
-                                        />
-                                        <button onClick={() => updateCartItem(item.productId, item.quantity + 1)} disabled={item.quantity >= stock} className="w-7 h-7 rounded-full bg-gray-100 dark:bg-gray-700 font-black disabled:opacity-30">+</button>
+                                    <div className="flex items-center gap-2">
+                                        <p className="font-black text-gray-900 dark:text-white mr-2">{item.subtotal.toLocaleString()}</p>
+                                        <button onClick={() => updateCartItem(item.productId, item.quantity - 1)} className="p-1 bg-gray-200 rounded hover:bg-gray-300 dark:bg-gray-600 dark:hover:bg-gray-500">-</button>
+                                        <button onClick={() => updateCartItem(item.productId, item.quantity + 1)} className="p-1 bg-gray-200 rounded hover:bg-gray-300 dark:bg-gray-600 dark:hover:bg-gray-500">+</button>
+                                        <button onClick={() => removeFromCart(item.productId)} className="p-1 text-red-500 hover:bg-red-50 rounded"><DeleteIcon className="w-4 h-4"/></button>
                                     </div>
-                                    <div className="w-20 text-right">
-                                        <p className="font-black text-sm">{item.subtotal.toLocaleString('fr-FR')}</p>
-                                    </div>
-                                    <button onClick={() => removeFromCart(item.productId)} className="text-gray-300 hover:text-red-500 transition-colors">
-                                        <DeleteIcon className="w-4 h-4" />
-                                    </button>
                                 </div>
-                            )
+                            );
                         })
                     )}
                 </div>
 
-                <div className="pt-6 border-t dark:border-gray-700 space-y-4">
-                    <div className="flex justify-between items-baseline">
-                        <span className="text-xs font-black uppercase text-gray-400">Total à payer</span>
-                        <span className="text-3xl font-black text-primary-600">{cartTotal.toLocaleString('fr-FR').replace(/\u202f/g, ' ')} <span className="text-sm">{settings.currencySymbol}</span></span>
+                <div className="p-4 bg-gray-50 dark:bg-gray-800 border-t dark:border-gray-700">
+                    <div className="flex justify-between items-center mb-4">
+                        <span className="text-gray-500 font-bold uppercase text-sm">Total</span>
+                        <span className="text-3xl font-black text-primary-600">{cartTotal.toLocaleString()} <span className="text-sm">{currentSettings.currencySymbol}</span></span>
                     </div>
-                    <button 
-                        onClick={() => { setIsPaymentModalOpen(true); setAmountTendered(cartTotal); }} 
-                        disabled={cart.length === 0} 
-                        className="w-full py-4 bg-primary-600 text-white rounded-2xl font-black text-lg shadow-xl hover:bg-primary-700 transition-all active:scale-95 disabled:opacity-50"
+                    <button
+                        onClick={() => setIsPaymentModalOpen(true)}
+                        disabled={cart.length === 0}
+                        className="w-full py-4 bg-green-600 hover:bg-green-700 text-white rounded-xl font-black uppercase tracking-widest shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all transform active:scale-95"
                     >
-                        PAYER MAINTENANT
+                        Payer Maintenant
                     </button>
                 </div>
             </div>
 
             {/* Payment Modal */}
-            <Modal isOpen={isPaymentModalOpen} onClose={() => setIsPaymentModalOpen(false)} title="Paiement & Finalisation">
-                <div>
-                    {error && <p className="text-red-500 bg-red-100 p-3 rounded-xl mb-6 font-bold text-center text-sm">{error}</p>}
-                    <div className="text-center mb-8">
-                        <p className="text-xs font-black uppercase text-gray-400 tracking-widest mb-1">Montant de la commande</p>
-                        <p className="text-5xl font-black text-gray-900 dark:text-white tracking-tighter">{cartTotal.toLocaleString('fr-FR')} <span className="text-lg">{settings.currencySymbol}</span></p>
+            <Modal isOpen={isPaymentModalOpen} onClose={() => setIsPaymentModalOpen(false)} title="Paiement">
+                <div className="space-y-6">
+                    <div className="text-center bg-gray-100 dark:bg-gray-800 p-6 rounded-2xl">
+                        <p className="text-gray-500 uppercase font-bold text-xs mb-2">Montant à payer</p>
+                        <p className="text-4xl font-black text-gray-900 dark:text-white">{cartTotal.toLocaleString()} {settings.currencySymbol}</p>
                     </div>
-                    
-                    <div className="space-y-4 mb-8">
-                         <div>
-                            <label className="block text-xs font-black uppercase text-gray-400 mb-2">Méthode de paiement</label>
-                            <div className="grid grid-cols-2 gap-2">
-                                {['Espèces', 'Mobile Money', 'Virement bancaire', 'Autre', ...(customerCredit > 0 ? ['Compte Avoir'] : [])].map(m => (
-                                    <button key={m} type="button" onClick={() => { setPaymentMethod(m as PaymentMethod); if(m !== 'Mobile Money') { setMomoOperator(''); setMomoNumber(''); } }} className={`py-2 text-[10px] font-bold uppercase border-2 rounded-xl ${paymentMethod === m ? 'bg-primary-600 text-white border-primary-600' : 'bg-white dark:bg-gray-700 text-gray-500'}`}>{m}{m === 'Compte Avoir' && customerCredit > 0 ? ` (${formatCurrency(customerCredit)})` : ''}</button>
-                                ))}
-                            </div>
-                        </div>
 
-                        {paymentMethod === 'Mobile Money' && (
-                            <div className="grid grid-cols-2 gap-4 animate-in slide-in-from-top-2 duration-300">
-                                <div>
-                                    <label className="block text-xs font-black uppercase text-gray-400 mb-1">Opérateur</label>
-                                    <input type="text" value={momoOperator} onChange={e => setMomoOperator(e.target.value)} placeholder="MTN / Moov" className="w-full p-3 border rounded-xl dark:bg-gray-700 font-bold uppercase" />
-                                </div>
-                                <div>
-                                    <label className="block text-xs font-black uppercase text-gray-400 mb-1">Numéro</label>
-                                    <input type="tel" value={momoNumber} onChange={e => setMomoNumber(e.target.value)} placeholder="00000000" className="w-full p-3 border rounded-xl dark:bg-gray-700 font-bold" />
-                                </div>
-                            </div>
-                        )}
-
-                        <div>
-                            <label className="block text-xs font-black uppercase text-gray-400 mb-1">Somme reçue</label>
-                            <input type="number" value={amountTendered} onChange={e => setAmountTendered(Number(e.target.value))} className="w-full p-4 border rounded-2xl dark:bg-gray-700 text-2xl font-black outline-none focus:ring-4 focus:ring-primary-500/20" />
-                        </div>
-                        <div className="flex justify-between items-center p-4 bg-gray-50 dark:bg-gray-900/30 rounded-2xl border border-gray-100 dark:border-gray-700">
-                            <span className="text-xs font-black uppercase text-gray-500">Monnaie à rendre</span>
-                            <span className="text-xl font-black text-green-600">{changeDue.toLocaleString('fr-FR')}</span>
+                    <div>
+                        <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Mode de paiement</label>
+                        <div className="grid grid-cols-2 gap-3">
+                            {['Espèces', 'Mobile Money', 'Carte Bancaire', 'Virement', 'Chèque', 'Compte Avoir'].map((method) => (
+                                <button
+                                    key={method}
+                                    onClick={() => setPaymentMethod(method as PaymentMethod)}
+                                    className={`p-3 rounded-lg border text-sm font-bold transition-all ${paymentMethod === method ? 'bg-primary-600 text-white border-primary-600 shadow-md' : 'bg-white dark:bg-gray-700 border-gray-200 dark:border-gray-600 hover:border-primary-400'}`}
+                                >
+                                    {method}
+                                </button>
+                            ))}
                         </div>
                     </div>
 
-                    <button onClick={handleFinalizeSale} className="w-full py-5 bg-green-600 text-white rounded-2xl font-black text-xl shadow-2xl hover:bg-green-700 transition-all active:scale-95">
-                        CONFIRMER LA VENTE
+                    {paymentMethod === 'Mobile Money' && (
+                        <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+                            <div>
+                                <label className="block text-xs font-bold uppercase text-gray-500 mb-1">Opérateur</label>
+                                <select value={momoOperator} onChange={e => setMomoOperator(e.target.value)} className="w-full p-2 border rounded dark:bg-gray-700">
+                                    <option value="">Choisir...</option>
+                                    <option value="MTN">MTN Mobile Money</option>
+                                    <option value="MOOV">Moov Money</option>
+                                    <option value="CELTII">Celtii Cash</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold uppercase text-gray-500 mb-1">Numéro</label>
+                                <input type="text" value={momoNumber} onChange={e => setMomoNumber(e.target.value)} className="w-full p-2 border rounded dark:bg-gray-700" placeholder="Ex: 01990000" />
+                            </div>
+                        </div>
+                    )}
+
+                    <div>
+                        <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">Montant Reçu</label>
+                        <input
+                            type="number"
+                            value={amountTendered}
+                            onChange={(e) => setAmountTendered(Number(e.target.value))}
+                            className="w-full p-4 text-2xl font-black text-center border-2 border-gray-300 rounded-xl focus:border-primary-500 focus:ring-0 dark:bg-gray-800 dark:border-gray-600"
+                            autoFocus
+                        />
+                    </div>
+
+                    {amountTendered >= cartTotal && (
+                        <div className="bg-green-100 text-green-800 p-4 rounded-xl text-center">
+                            <p className="text-xs font-bold uppercase">Monnaie à rendre</p>
+                            <p className="text-2xl font-black">{changeDue.toLocaleString()} {settings.currencySymbol}</p>
+                        </div>
+                    )}
+
+                    <button
+                        onClick={handleFinalizeSale}
+                        className="w-full py-4 bg-primary-600 hover:bg-primary-700 text-white rounded-xl font-black uppercase tracking-widest shadow-lg transition-transform active:scale-95"
+                    >
+                        Valider la vente
                     </button>
                 </div>
             </Modal>
 
             {/* Receipt Modal */}
-             <Modal isOpen={isReceiptModalOpen} onClose={async () => { await resetSale(); }} title="Impression du Reçu">
-                <div className="flex flex-col items-center w-full">
-                    {lastSale && (
-                        <div className="shadow-lg mb-6">
-                            <PosReceipt
-                                ref={receiptRef}
-                                sale={lastSale}
-                                customer={customers.find(c => c.id === lastSale.customerId) || null}
-                                products={products}
-                                companyInfo={settings}
-                                warehouse={warehouses.find(w => w.id === lastSale.warehouseId) || null}
-                            />
-                        </div>
-                    )}
-                    <div className="w-full flex gap-3">
-                        <button onClick={async () => { await resetSale(); }} className="flex-1 py-3 bg-gray-100 dark:bg-gray-700 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">Suivant</button>
-                        <button onClick={handlePrint} className="flex-1 py-3 bg-primary-600 text-white rounded-xl font-black text-xs uppercase tracking-widest shadow-lg hover:bg-primary-700 transition-colors">Imprimer</button>
+             <Modal isOpen={isReceiptModalOpen} onClose={resetSale} title="Ticket de Caisse">
+                <div className="flex flex-col h-[80vh]">
+                    <div className="flex-1 overflow-auto bg-gray-100 p-4 rounded border mb-4">
+                        <PosReceipt 
+                            id="pos-receipt-capture"
+                            ref={receiptRef} 
+                            sale={lastSale} 
+                            companyInfo={settings} 
+                            customer={customers.find(c => c.id === lastSale?.customerId)}
+                            products={products}
+                            warehouse={warehouses.find(w => w.id === selectedWarehouseId)}
+                        />
                     </div>
+                    <div className="flex gap-4">
+                        <button onClick={handleShareReceipt} className="flex-1 py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg font-bold uppercase flex items-center justify-center gap-2">
+                            <WhatsappIcon className="w-5 h-5" />
+                            WhatsApp
+                        </button>
+                        <button onClick={handlePrint} className="flex-1 py-3 bg-gray-800 hover:bg-gray-900 text-white rounded-lg font-bold uppercase">
+                            Imprimer
+                        </button>
+                        <button onClick={resetSale} className="flex-1 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-lg font-bold uppercase">
+                            Nouvelle
+                        </button>
+                    </div>
+                </div>
+            </Modal>
+
+            {/* Stock Alert Modal */}
+            <Modal isOpen={isStockAlertOpen} onClose={() => setIsStockAlertOpen(false)} title="Alerte Stock">
+                <div className="p-6 text-center">
+                    <WarningIcon className="w-16 h-16 text-yellow-500 mx-auto mb-4" />
+                    <p className="text-lg font-bold text-gray-800 dark:text-white mb-2">Attention !</p>
+                    <p className="text-gray-600 dark:text-gray-300">{stockAlertMessage}</p>
+                    <button
+                        onClick={() => setIsStockAlertOpen(false)}
+                        className="mt-6 px-6 py-2 bg-primary-600 text-white rounded-lg font-bold hover:bg-primary-700 transition-colors"
+                    >
+                        Compris
+                    </button>
                 </div>
             </Modal>
         </div>

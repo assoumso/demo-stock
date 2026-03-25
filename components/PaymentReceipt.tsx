@@ -58,74 +58,90 @@ const numberToWords = (num: number): string => {
 export const PaymentReceipt = React.forwardRef<HTMLDivElement, PaymentReceiptProps>((props, ref) => {
     const { payment, customer, settings, balanceAfter, reference } = props;
     
-    // Format date
-    const dateObj = new Date(payment.date);
-    const dateStr = dateObj.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: '2-digit' }); // dd/mm/yy
-    const timeStr = dateObj.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    // Obtenir la date et l'heure actuelles
+    // Si l'utilisateur est au Bénin (GMT+1)
+    const now = new Date();
+    
+    // Formatage manuel pour être sûr de l'heure locale
+    const dateStr = now.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const timeStr = now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+
+    // Formatage de la date du paiement (qui peut être différente de l'édition)
+    const paymentDateStr = new Date(payment.date).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const paymentTimeStr = new Date(payment.date).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 
     const amountWords = numberToWords(Math.floor(payment.amount)).toUpperCase() + " FRANCS CFA";
 
     return (
-        <div ref={ref} className="bg-white p-8 max-w-[80mm] mx-auto text-black font-sans text-sm" style={{ width: '80mm', minHeight: '100mm' }}>
+        <div 
+            id="payment-receipt-capture"
+            ref={ref} 
+            className="bg-white p-4 mx-auto text-black font-sans text-sm payment-receipt-container" 
+            style={{ width: '80mm', minHeight: 'auto', paddingBottom: '20px' }}
+        >
             {/* Header */}
-            <div className="text-center mb-4">
-                <img src={settings?.companyLogoUrl || '/logo.png'} alt="Logo" className="mx-auto h-16 w-auto mb-2 object-contain"/>
-                <h1 className="font-bold text-lg uppercase">{settings?.companyName || 'RIDWANE-SUPERMARCHE'}</h1>
-                <p className="text-xs">{settings?.companyAddress || 'Korhogo, Abidjan , lagune, BP 287, Côte d\'ivoire'}</p>
-                <p className="text-xs">{settings?.companyPhone || '07-08-34-13-22'}</p>
+            <div className="text-center mb-2">
+                <img 
+                    src={settings?.companyLogoUrl || '/logo.png'} 
+                    alt="Logo" 
+                    className="mx-auto h-12 w-auto mb-1 object-contain"
+                    crossOrigin="anonymous"
+                />
+                <h1 className="font-bold text-sm uppercase leading-tight">{settings?.companyName || 'GROUP SYBA DISTRIBUTION & SERVICES'}</h1>
+                <p className="text-[10px] leading-tight">{settings?.companyAddress || 'Cotonou, Bénin'}</p>
+                <p className="text-[10px] leading-tight">{settings?.companyPhone || '+229 00 00 00 00'}</p>
             </div>
 
             {/* Title */}
-            <div className="bg-indigo-100 text-center py-2 mb-4 border-y-2 border-indigo-200">
-                <h2 className="font-black text-xl uppercase text-indigo-900 tracking-wider">Reçu de versement</h2>
+            <div className="bg-gray-100 text-center py-1 mb-2 border-y border-gray-300">
+                <h2 className="font-bold text-sm uppercase tracking-wide">Reçu de versement</h2>
             </div>
 
             {/* Receipt Info */}
-            <div className="text-center mb-6">
-                <p className="font-bold text-lg">N° {payment.id === 'TEMP_RECEIPT' ? Math.floor(Date.now() / 1000).toString().slice(-4) : payment.id.slice(-4).toUpperCase()}</p>
-                <p className="font-bold text-gray-600">Date: {dateStr}</p>
+            <div className="flex justify-between items-center mb-2 text-xs px-2">
+                <p><span className="font-bold">N°:</span> {payment.id === 'TEMP_RECEIPT' ? Math.floor(Date.now() / 1000).toString().slice(-4) : payment.id.slice(-4).toUpperCase()}</p>
+                <p><span className="font-bold">Date:</span> {paymentDateStr} à {paymentTimeStr}</p>
             </div>
 
             {/* Customer */}
-            <div className="mb-6 px-4">
-                <p className="uppercase text-gray-600 text-xs font-bold mb-1">Reçu de</p>
-                <p className="font-black text-lg uppercase">M. {customer.name}</p>
+            <div className="mb-2 px-2 border-b border-dashed border-gray-300 pb-2">
+                <p className="text-[10px] text-gray-500 uppercase">Reçu de:</p>
+                <p className="font-bold text-sm uppercase truncate">{customer.name}</p>
             </div>
 
             {/* Amount */}
-            <div className="mb-6 px-4 bg-gray-50 py-4 rounded-xl border border-gray-100">
-                <div className="flex justify-between items-baseline mb-2">
-                    <span className="font-bold text-xl text-gray-600">Montant:</span>
-                    <span className="font-black text-2xl">{formatCurrency(payment.amount)}</span>
+            <div className="mb-2 px-2 bg-gray-50 py-2 rounded border border-gray-200">
+                <div className="flex justify-between items-baseline">
+                    <span className="font-bold text-xs text-gray-600">Montant:</span>
+                    <span className="font-black text-lg">{formatCurrency(payment.amount)}</span>
                 </div>
-                <p className="text-xs font-bold italic uppercase text-gray-500 tracking-wide border-t border-gray-200 pt-2 mt-1">
-                    ({amountWords})
+                <p className="text-[10px] italic uppercase text-gray-500 mt-1 leading-tight border-t border-gray-200 pt-1">
+                    {amountWords}
                 </p>
             </div>
 
             {/* Details */}
-            <div className="mb-8 px-4 space-y-2 text-sm">
-                <div className="flex justify-between border-b border-dashed border-gray-200 pb-1">
+            <div className="mb-2 px-2 space-y-1 text-xs">
+                <div className="flex justify-between">
                     <span className="text-gray-600">Mode:</span>
                     <span className="font-bold uppercase">{payment.method}</span>
                 </div>
-                <div className="flex justify-between border-b border-dashed border-gray-200 pb-1">
+                <div className="flex justify-between">
                     <span className="text-gray-600">Motif:</span>
-                    <span className="font-bold uppercase italic">{payment.notes || reference || 'REGLEMENT'}</span>
+                    <span className="font-bold uppercase italic text-right truncate ml-2">{payment.notes || reference || 'REGLEMENT'}</span>
                 </div>
             </div>
 
-            {/* Timestamps */}
-            <div className="mb-6 text-[10px] text-gray-400 italic space-y-1 text-center">
-                <p>Date de paiement: {dateStr}</p>
-                <p>Date d'édition: {dateStr}</p>
-                <p>Heure d'édition: {timeStr}</p>
+            {/* Balance */}
+            <div className="border border-gray-800 rounded p-2 mb-2 flex justify-between items-center mx-2 bg-white">
+                <span className="text-[10px] font-bold uppercase">Solde après:</span>
+                <span className="font-black text-sm">{formatCurrency(balanceAfter)}</span>
             </div>
 
-            {/* Balance */}
-            <div className="border-2 border-gray-800 rounded-xl p-3 bg-white flex justify-between items-center shadow-sm mx-4">
-                <span className="text-xs font-bold uppercase">Solde après édition:</span>
-                <span className="font-black text-xl">{formatCurrency(balanceAfter)}</span>
+            {/* Footer */}
+            <div className="text-[9px] text-gray-400 text-center italic mt-2">
+                <p>Édité le {dateStr} à {timeStr}</p>
+                <p>MERCI DE VOTRE CONFIANCE !</p>
             </div>
         </div>
     );

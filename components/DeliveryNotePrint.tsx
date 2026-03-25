@@ -53,7 +53,7 @@ export const DeliveryNotePrint: React.FC<DeliveryNoteProps> = ({ sale, customer,
                             return (
                                 <tr key={index}>
                                     <td className="p-3 border border-gray-200">
-                                        <div className="font-bold">{product?.name || 'Article Inconnu'}</div>
+                                        <div className="font-bold">{item.productName || product?.name || 'Article Inconnu'}</div>
                                         {product?.sku && <div className="text-xs text-gray-500">{product.sku}</div>}
                                     </td>
                                     <td className="text-center p-3 border border-gray-200 font-bold text-lg">{item.quantity}</td>

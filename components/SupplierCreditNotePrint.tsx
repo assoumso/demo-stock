@@ -20,7 +20,7 @@ export const SupplierCreditNotePrint = React.forwardRef<HTMLDivElement, Supplier
             <div className="flex justify-between items-start mb-12">
                 <div>
                     <img src={settings?.companyLogoUrl || '/logo.svg'} alt="Logo" className="h-24 w-auto mb-4 object-contain"/>
-                    <h1 className="text-2xl font-black uppercase tracking-tight">{settings?.companyName || 'RIDWANE-SUPERMARCHE'}</h1>
+                    <h1 className="text-2xl font-black uppercase tracking-tight">{settings?.companyName || 'ETS COUL & FRERES'}</h1>
                     <p className="text-sm text-gray-600">{settings?.companyAddress}</p>
                     <p className="text-sm text-gray-600">{settings?.companyPhone}</p>
                     {settings?.companyEmail && <p className="text-sm text-gray-600">{settings.companyEmail}</p>}

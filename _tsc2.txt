@@ -1,0 +1,4 @@
+﻿pages/SupplierAccountPage.tsx(480,17): error TS1472: 'catch' or 'finally' expected.
+pages/SupplierAccountPage.tsx(521,11): error TS1005: ',' expected.
+pages/SupplierAccountPage.tsx(523,5): error TS1128: Declaration or statement expected.
+pages/SupplierAccountPage.tsx(802,1): error TS1128: Declaration or statement expected.

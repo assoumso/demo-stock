@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { collection, getDocs, getDoc, doc } from 'firebase/firestore';
-import { db } from '../firebase';
+import { supabase } from '../supabase';
 import { Product, Category, Brand, Supplier, AppSettings } from '../types';
 import { ProductListPrint } from '../components/ProductListPrint';
 import { useReactToPrint } from 'react-to-print';
@@ -41,25 +40,30 @@ const ProductPrintPage: React.FC = () => {
                 const outOfStock = searchParams.get('outOfStock') === 'true';
 
                 // Charger les données
-                const [productsSnap, categoriesSnap, brandsSnap, suppliersSnap, settingsSnap] = await Promise.all([
-                    getDocs(collection(db, 'products')),
-                    getDocs(collection(db, 'categories')),
-                    getDocs(collection(db, 'brands')),
-                    getDocs(collection(db, 'suppliers')),
-                    getDoc(doc(db, 'settings', 'app-config'))
+                const [productsRes, categoriesRes, brandsRes, suppliersRes, settingsRes] = await Promise.all([
+                    supabase.from('products').select('*'),
+                    supabase.from('categories').select('*'),
+                    supabase.from('brands').select('*'),
+                    supabase.from('suppliers').select('*'),
+                    supabase.from('app_settings').select('*').limit(1).single()
                 ]);
 
-                const productsData = productsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product));
-                const categoriesData = categoriesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Category));
-                const brandsData = brandsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Brand));
-                const suppliersData = suppliersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Supplier));
+                if (productsRes.error) throw productsRes.error;
+                if (categoriesRes.error) throw categoriesRes.error;
+                if (brandsRes.error) throw brandsRes.error;
+                if (suppliersRes.error) throw suppliersRes.error;
+
+                const productsData = (productsRes.data || []) as Product[];
+                const categoriesData = (categoriesRes.data || []) as Category[];
+                const brandsData = (brandsRes.data || []) as Brand[];
+                const suppliersData = (suppliersRes.data || []) as Supplier[];
 
                 setCategories(categoriesData);
                 setBrands(brandsData);
                 setSuppliers(suppliersData);
 
-                if (settingsSnap.exists()) {
-                    setSettings(settingsSnap.data() as AppSettings);
+                if (settingsRes.data) {
+                    setSettings(settingsRes.data as AppSettings);
                 }
 
                 // Filtrer les produits selon les paramètres
@@ -87,7 +91,7 @@ const ProductPrintPage: React.FC = () => {
                 if (lowStock) {
                     filteredProducts = filteredProducts.filter(product => {
                         const totalStock = (product.stockLevels || []).reduce((sum, sl) => sum + sl.quantity, 0);
-                        return totalStock <= (product.minStockLevel || 0) && totalStock > 0;
+                        return totalStock <= (product.minStockAlert || 0) && totalStock > 0;
                     });
                 }
 

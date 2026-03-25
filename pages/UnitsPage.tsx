@@ -1,16 +1,15 @@
-import React, { useState, useEffect, FormEvent } from 'react';
-import { db } from '../firebase';
-import { collection, getDocs, doc, addDoc, updateDoc, deleteDoc, DocumentData, writeBatch } from 'firebase/firestore';
+import React, { useState, FormEvent } from 'react';
+import { supabase } from '../supabase';
 import { Unit } from '../types';
 import Modal from '../components/Modal';
 import { PlusIcon, EditIcon, DeleteIcon } from '../constants';
 import DropdownMenu, { DropdownMenuItem } from '../components/DropdownMenu';
 import { useAuth } from '../hooks/useAuth';
+import { useData } from '../context/DataContext';
 
 const UnitsPage: React.FC = () => {
     const { hasPermission } = useAuth();
-    const [items, setItems] = useState<Unit[]>([]);
-    const [loading, setLoading] = useState(true);
+    const { units: items, loading, refreshData } = useData();
     const [error, setError] = useState<string | null>(null);
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [currentItem, setCurrentItem] = useState<Partial<Unit>>({});
@@ -19,20 +18,6 @@ const UnitsPage: React.FC = () => {
     // Selection State
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
     const [isBulkDeleteModalOpen, setIsBulkDeleteModalOpen] = useState(false);
-
-
-    const fetchData = async () => {
-        setLoading(true);
-        try {
-            const snap = await getDocs(collection(db, "units"));
-            setItems(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Unit)));
-        } catch (err) {
-            setError("Impossible de charger les unités.");
-        } finally {
-            setLoading(false);
-        }
-    };
-    useEffect(() => { fetchData(); }, []);
 
     const openModalForNew = () => { setIsEditing(false); setCurrentItem({ name: '' }); setIsModalOpen(true); };
     const openModalForEdit = (item: Unit) => { setIsEditing(true); setCurrentItem(item); setIsModalOpen(true); };
@@ -43,26 +28,45 @@ const UnitsPage: React.FC = () => {
         const { id, ...data } = currentItem;
         if (!data.name) return;
         try {
-            if (isEditing) { await updateDoc(doc(db, 'units', id!), data as DocumentData); } 
-            else { await addDoc(collection(db, "units"), data); }
-            await fetchData();
+            if (isEditing && id) {
+                const { error } = await supabase.from('units').update(data).eq('id', id);
+                if (error) throw error;
+            } else {
+                const newId = crypto.randomUUID();
+                const { error } = await supabase.from('units').insert({ ...data, id: newId });
+                if (error) throw error;
+            }
             closeModal();
-        } catch (err) { setError("Erreur d'enregistrement."); }
+            await refreshData(['config']);
+        } catch (err: any) {
+            console.error(err);
+            setError("Erreur d'enregistrement.");
+        }
     };
     const handleDelete = async (id: string) => {
         if (window.confirm("Supprimer cette unité ?")) {
-            try { await deleteDoc(doc(db, "units", id)); await fetchData(); } 
-            catch (err) { setError("Erreur de suppression."); }
+            try {
+                const { error } = await supabase.from('units').delete().eq('id', id);
+                if (error) throw error;
+                await refreshData(['config']);
+            } catch (err: any) {
+                console.error(err);
+                setError("Erreur de suppression.");
+            }
         }
     };
     
     const handleBulkDelete = async () => {
-        const batch = writeBatch(db);
-        selectedIds.forEach(id => batch.delete(doc(db, 'units', id)));
-        await batch.commit();
-        await fetchData();
-        setSelectedIds([]);
-        setIsBulkDeleteModalOpen(false);
+        try {
+            const { error } = await supabase.from('units').delete().in('id', selectedIds);
+            if (error) throw error;
+            setIsBulkDeleteModalOpen(false);
+            setSelectedIds([]);
+            await refreshData(['config']);
+        } catch (err: any) {
+            console.error(err);
+            setError("Erreur lors de la suppression en masse.");
+        }
     };
 
     const handleSelectOne = (id: string) => {

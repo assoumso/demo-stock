@@ -29,7 +29,8 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
         } else if (segments[1] === 'edit') {
           actionPermission = `${basePermission}:edit`;
         } else if (segments[1] === 'invoice') {
-          actionPermission = `${basePermission}:invoice`;
+          // Allow anyone with base module access to view invoices
+          // actionPermission = `${basePermission}:invoice`;
         } else if (basePermission === 'inventory' && segments[1] === 'adjustments') {
           // Special case for nested routes that are distinct permissions
           basePermission = 'inventory:adjustments';

@@ -1,9 +1,7 @@
 
 import React, { createContext, useState, useContext, ReactNode, useEffect } from 'react';
 import { User, Role } from '../types';
-import { db } from '../firebase';
-import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore';
-import { menuConfig } from '../config/menu';
+import { supabase } from '../supabase';
 
 const MOCK_ROLES: Role[] = [
     { id: 'admin-role', name: 'Administrateur', permissions: [] },
@@ -24,6 +22,7 @@ const MOCK_ROLES: Role[] = [
 
 const MOCK_USERS: User[] = [
     { uid: 'mock-admin-uid', username: 'admin', displayName: 'Administrateur', password: 'password', roleId: 'admin-role' },
+    { uid: 'mock-user-uid', username: 'user', displayName: 'Utilisateur', password: 'password', roleId: 'manager-role' }
 ];
 
 type AuthenticatedUser = User & { role: Role };
@@ -44,14 +43,42 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   // Charger la session sauvegardée au démarrage
   useEffect(() => {
-    const savedUser = localStorage.getItem('ets_yababou_user');
+    // Changement de clé de stockage pour éviter les conflits avec l'ancienne application
+    const savedUser = localStorage.getItem('coul_freres_user_session'); 
     if (savedUser) {
       try {
-        setUser(JSON.parse(savedUser));
+        const parsedUser = JSON.parse(savedUser);
+        if (parsedUser) {
+           setUser(parsedUser);
+        }
       } catch (e) {
-        localStorage.removeItem('ets_yababou_user');
+        localStorage.removeItem('coul_freres_user_session');
       }
     }
+    
+    // Nettoyer toutes les anciennes clés de cache d'autres applications au démarrage
+    const OLD_SESSION_KEYS = [
+        'ets_yababou_user',
+        'app_user_session',
+        'groupsyba_user',
+        'groupsyba_session',
+        'demo_stock_user',
+        'supabase_user',
+        'supabase_auth',
+        'sb-fir-stockage-bdf18-auth-token',
+    ];
+    OLD_SESSION_KEYS.forEach(key => localStorage.removeItem(key));
+    
+    // Supprimer aussi toutes les clés sessionStorage des autres apps
+    try {
+        const keys = Object.keys(sessionStorage);
+        keys.forEach(key => {
+            if (key.includes('groupsyba') || key.includes('supabase') || key.includes('demo_stock')) {
+                sessionStorage.removeItem(key);
+            }
+        });
+    } catch(e) { /* ignoré */ }
+    
     setLoading(false);
   }, []);
 
@@ -63,54 +90,74 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const login = async (username: string, pass: string) => {
     setLoading(true);
+    let userData: User | null = null;
+    let roleData: Role | null = null;
+    
     try {
-        let userData: User | null = null;
-        let roleData: Role | null = null;
+        console.log(`Tentative de connexion pour: ${username}`);
 
-        try {
-            const usersRef = collection(db, "users");
-            const q = query(usersRef, where("username", "==", username));
-            const userQuerySnapshot = await getDocs(q);
+        // 1. Essayer avec les utilisateurs en dur (MOCK_USERS) d'abord pour garantir l'accès admin
+        const mockUser = MOCK_USERS.find(u => u.username === username && u.password === pass);
+        if (mockUser) {
+            console.log("Utilisateur trouvé dans les mocks (admin secours)");
+            userData = mockUser;
+            // Créer un rôle admin complet pour le mock
+            roleData = { 
+                id: 'admin-role', 
+                name: 'Administrateur', 
+                permissions: ['all'] // Permission spéciale ou liste complète
+            };
+        } 
+        else {
+            // 2. Sinon chercher dans Supabase
+            try {
+                const { data: userRecord, error: userError } = await supabase
+                    .from('users')
+                    .select('*')
+                    .eq('username', username)
+                    .single();
 
-            if (!userQuerySnapshot.empty) {
-                const userDoc = userQuerySnapshot.docs[0];
-                const data = { uid: userDoc.id, ...userDoc.data() } as User;
-                
-                if (data.password === pass) {
-                    userData = data;
+                if (userError) {
+                    console.error("Erreur recherche utilisateur Supabase:", userError);
+                } else if (userRecord && userRecord.password === pass) {
+                    userData = { ...userRecord, uid: userRecord.id } as User;
+                    
                     // Récupérer le rôle
                     if (userData.roleId) {
-                        const roleDocSnap = await getDoc(doc(db, "roles", userData.roleId));
-                        if (roleDocSnap.exists()) {
-                            roleData = { id: roleDocSnap.id, ...roleDocSnap.data() } as Role;
+                        const { data: roleRecord, error: roleError } = await supabase
+                            .from('roles')
+                            .select('*')
+                            .eq('id', userData.roleId)
+                            .single();
+                        
+                        if (!roleError && roleRecord) {
+                            roleData = roleRecord as Role;
                         }
                     }
                 }
-            }
-        } catch (firestoreError) {
-            console.warn("Firestore inaccessible ou non configuré, tentative via comptes par défaut...");
-        }
-
-        // Si non trouvé dans Firestore ou erreur, essayer les mocks (admin/password)
-        if (!userData) {
-            const mockUser = MOCK_USERS.find(u => u.username === username && u.password === pass);
-            if (mockUser) {
-                const mockRole = MOCK_ROLES.find(r => r.id === mockUser.roleId);
-                if (mockRole) {
-                    userData = mockUser;
-                    roleData = mockRole;
-                }
+            } catch (supabaseError) {
+                console.error("Erreur connexion Supabase:", supabaseError);
             }
         }
 
-        if (userData && roleData) {
+        if (userData) {
+            // Si pas de rôle trouvé mais utilisateur valide, donner un rôle par défaut limité
+            if (!roleData) {
+                console.warn("Aucun rôle trouvé, attribution rôle par défaut");
+                roleData = { id: 'temp-guest', name: 'Invité', permissions: [] };
+            }
+
             const authenticatedUser = { ...userData, role: roleData };
+            console.log("Connexion réussie:", authenticatedUser);
+            
             setUser(authenticatedUser);
-            localStorage.setItem('ets_yababou_user', JSON.stringify(authenticatedUser));
-        } else {
-            throw new Error("Identifiants incorrects ou base de données non initialisée.");
+            localStorage.setItem('coul_freres_user_session', JSON.stringify(authenticatedUser));
+            return;
         }
-    } catch (error: any) {
+
+        throw new Error("Nom d'utilisateur ou mot de passe incorrect");
+    } catch (error) {
+        console.error("Erreur finale login:", error);
         throw error;
     } finally {
         setLoading(false);
@@ -119,6 +166,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const logout = async () => {
     setUser(null);
+    localStorage.removeItem('coul_freres_user_session');
+    // Clear legacy data just in case
+    localStorage.removeItem('app_user_session');
     localStorage.removeItem('ets_yababou_user');
   };
 

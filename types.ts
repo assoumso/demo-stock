@@ -39,7 +39,9 @@ export interface BasePartner {
   nif?: string;
   rccm?: string;
   website?: string;
+  whatsapp?: string;
   notes?: string;
+  isArchived?: boolean;
 }
 
 /**
@@ -51,6 +53,8 @@ export interface Customer extends BasePartner {
   openingBalance?: number;
   openingBalanceDate?: string;
   creditBalance?: number; // Solde Avoir (argent que nous devons au client)
+  archivedAt?: string;
+  archivedBy?: string;
 }
 
 /**
@@ -92,6 +96,7 @@ export interface Product {
   taxInclusive?: boolean;
   minStockAlert: number;
   stockLevels?: StockLevel[];
+  isArchived?: boolean;
 }
 
 /**
@@ -111,6 +116,30 @@ export interface BankTransaction {
   reference?: string;
   createdByUserId: string;
   category?: string;
+  attachmentUrl?: string;
+}
+
+/**
+ * Expense Category.
+ */
+export interface ExpenseCategory {
+  id: string;
+  name: string;
+}
+
+/**
+ * Expense record.
+ */
+export interface Expense {
+  id: string;
+  date: string;
+  amount: number;
+  categoryId: string;
+  description?: string;
+  paymentMethod: PaymentMethod;
+  reference?: string;
+  paidTo?: string;
+  createdByUserId: string;
   attachmentUrl?: string;
 }
 
@@ -146,6 +175,7 @@ export interface Warehouse {
  */
 export interface SaleItem {
   productId: string;
+  productName?: string;
   quantity: number;
   price: number;
   subtotal: number;
@@ -239,6 +269,7 @@ export interface DeletedPurchasePayment {
  */
 export interface PurchaseItem {
   productId: string;
+  productName?: string;
   quantity: number;
   cost: number;
   subtotal: number;
@@ -371,8 +402,10 @@ export interface AppSettings {
   companyContact?: string;
   companyRCCM?: string;
   companyLogoUrl?: string;
+  companyWhatsapp?: string;
   currencySymbol: string;
   invoiceFooterText: string;
+  footerText?: string; // Alias for invoiceFooterText used in some components
   saleInvoicePrefix: string;
   purchaseInvoicePrefix: string;
   defaultTaxRate: number;

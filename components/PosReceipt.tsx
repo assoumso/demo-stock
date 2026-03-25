@@ -3,27 +3,35 @@ import { Sale, Customer, Product, AppSettings, Warehouse } from '../types';
 import { formatCurrency } from '../utils/formatters';
 
 interface PosReceiptProps {
-    sale: Sale;
+    sale: Sale | null;
     customer: Customer | null;
     products: Product[];
     companyInfo: Partial<AppSettings>;
     warehouse: Warehouse | null;
+    id?: string;
 }
 
 const PosReceipt = React.forwardRef<HTMLDivElement, PosReceiptProps>(
-    ({ sale, customer, products, companyInfo, warehouse }, ref) => {
+    ({ sale, customer, products, companyInfo, warehouse, id }, ref) => {
     
+    if (!sale) return null;
+
     const getProductName = (productId: string) => {
         return products.find(p => p.id === productId)?.name || 'Produit inconnu';
     };
 
     return (
-        <div ref={ref} className="bg-white text-black p-4 font-mono text-xs" style={{ width: '80mm' }}>
+        <div id={id} ref={ref} className="bg-white text-black p-4 font-mono text-xs mx-auto" style={{ width: '80mm' }}>
             <div className="text-center">
-                <img src={companyInfo.companyLogoUrl || '/logo.svg'} alt="Logo" className="mx-auto h-16 w-auto mb-2 object-contain"/>
-                <h2 className="text-lg font-bold">{companyInfo.companyName || 'RIDWANE-SUPERMARCHE'}</h2>
-                <p>{companyInfo.companyAddress || 'Korhogo, Abidjan , lagune, BP 287, Côte d\'ivoire'}</p>
-                <p>{companyInfo.companyPhone || '07-08-34-13-22'}</p>
+                <img 
+                    src={companyInfo.companyLogoUrl || '/logo.svg'} 
+                    alt="Logo" 
+                    className="mx-auto h-16 w-auto mb-2 object-contain"
+                    crossOrigin="anonymous"
+                />
+                <h2 className="text-lg font-bold">{companyInfo.companyName || 'GROUP SYBA DISTRIBUTION & SERVICES'}</h2>
+                <p>{companyInfo.companyAddress || 'Cotonou, Bénin'}</p>
+                <p>{companyInfo.companyPhone || '+229 00 00 00 00'}</p>
             </div>
             
             <hr className="my-2 border-dashed border-black"/>
@@ -63,7 +71,7 @@ const PosReceipt = React.forwardRef<HTMLDivElement, PosReceiptProps>(
                 <tbody>
                     {sale.items.map(item => (
                         <tr key={item.productId}>
-                            <td className="text-left">{getProductName(item.productId)}</td>
+                            <td className="text-left">{item.productName || getProductName(item.productId)}</td>
                             <td className="text-center">{item.quantity}</td>
                             <td className="text-right">{item.price.toLocaleString('fr-FR').replace(/\u202f/g, ' ')}</td>
                             <td className="text-right">{item.subtotal.toLocaleString('fr-FR').replace(/\u202f/g, ' ')}</td>

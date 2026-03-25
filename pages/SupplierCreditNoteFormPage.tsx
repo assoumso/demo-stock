@@ -1,21 +1,21 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { db } from '../firebase';
-import { collection, doc, getDocs, runTransaction, query, orderBy } from 'firebase/firestore';
+import { supabase } from '../supabase';
 import { Supplier, Product, Warehouse, SupplierCreditNote, CreditNoteItem, Payment } from '../types';
 import { useAuth } from '../hooks/useAuth';
 import { ArrowLeftIcon, SearchIcon, DeleteIcon } from '../constants';
 import { formatCurrency } from '../utils/formatters';
+import { useData } from '../context/DataContext';
 
 const SupplierCreditNoteFormPage: React.FC = () => {
     const { user } = useAuth();
     const navigate = useNavigate();
     const location = useLocation();
+    
+    const { suppliers, products, warehouses, loading: dataLoading } = useData();
+
     const [loading, setLoading] = useState(false);
-    const [suppliers, setSuppliers] = useState<Supplier[]>([]);
-    const [products, setProducts] = useState<Product[]>([]);
-    const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
     
     // Form State
     const [supplierId, setSupplierId] = useState('');
@@ -30,26 +30,10 @@ const SupplierCreditNoteFormPage: React.FC = () => {
     const [productSearch, setProductSearch] = useState('');
 
     useEffect(() => {
-        const loadData = async () => {
-            try {
-                const [sSnap, pSnap, wSnap] = await Promise.all([
-                    getDocs(query(collection(db, "suppliers"), orderBy("name"))),
-                    getDocs(collection(db, "products")),
-                    getDocs(collection(db, "warehouses"))
-                ]);
-                
-                setSuppliers(sSnap.docs.map(d => ({id: d.id, ...d.data()} as Supplier)));
-                setProducts(pSnap.docs.map(d => ({id: d.id, ...d.data()} as Product)));
-                const ws = wSnap.docs.map(d => ({id: d.id, ...d.data()} as Warehouse));
-                setWarehouses(ws);
-                if (ws.length > 0) setWarehouseId(ws.find(w => w.isMain)?.id || ws[0].id);
-            } catch (error) {
-                console.error('Erreur lors du chargement des données:', error);
-                alert('Erreur lors du chargement des données. Veuillez actualiser la page.');
-            }
-        };
-        loadData();
-    }, []);
+        if (!dataLoading && warehouses.length > 0 && !warehouseId) {
+             setWarehouseId(warehouses.find(w => w.isMain)?.id || warehouses[0].id);
+        }
+    }, [dataLoading, warehouses, warehouseId]);
 
     const filteredSuppliers = useMemo(() => {
         if (!supplierSearch) return [];
@@ -126,134 +110,124 @@ const SupplierCreditNoteFormPage: React.FC = () => {
             alert("Veuillez ajouter au moins un produit");
             return;
         }
-
         setLoading(true);
         try {
-            await runTransaction(db, async (transaction) => {
-                // PHASE 1: READS (Must be first)
-                // Read Supplier
-                const supplierRef = doc(db, "suppliers", supplierId);
-                const supplierSnap = await transaction.get(supplierRef);
-                if (!supplierSnap.exists()) {
-                    throw new Error("Fournisseur introuvable dans la base de données");
-                }
-                const supplierData = supplierSnap.data() as Supplier;
+            const dateStr = new Date().toISOString();
+            
+            // PHASE 1: READS & PREPARATION
+            // Read Supplier
+            const { data: supplierData, error: supplierError } = await supabase
+                .from('suppliers')
+                .select('*')
+                .eq('id', supplierId)
+                .single();
+            
+            if (supplierError || !supplierData) {
+                throw new Error("Fournisseur introuvable");
+            }
 
-                // Read Products (if return) - Prepare updates
-                const productUpdates: { ref: any, data: any }[] = [];
-                if (type === 'return' && warehouseId) {
-                    for (const item of items) {
-                        if (!item.productId || !item.productId.trim() || item.quantity <= 0) {
-                            throw new Error(`Produit invalide: ${item.productName || 'Nom inconnu'}`);
-                        }
-                        
-                        const productRef = doc(db, "products", item.productId);
-                        const productSnap = await transaction.get(productRef);
-                        if (!productSnap.exists()) {
-                            throw new Error(`Produit ${item.productName || item.productId} introuvable`);
-                        }
-                        
-                        const productData = productSnap.data() as Product;
-                        if (!productData.stockLevels || !Array.isArray(productData.stockLevels)) {
-                            // If stockLevels is missing, assume 0 stock
-                            throw new Error(`Stock insuffisant pour ${item.productName} (Pas de stock défini)`);
-                        }
-                        
-                        const stockLevels = [...productData.stockLevels];
-                        const existingLevelIndex = stockLevels.findIndex(sl => sl && sl.warehouseId === warehouseId);
-                        
-                        if (existingLevelIndex === -1 || (stockLevels[existingLevelIndex].quantity || 0) < item.quantity) {
-                             const current = existingLevelIndex >= 0 ? stockLevels[existingLevelIndex].quantity : 0;
-                             throw new Error(`Stock insuffisant pour ${item.productName} (Disponible: ${current}, Demandé: ${item.quantity})`);
-                        }
+            // Generate IDs and Ref
+            const paymentId = crypto.randomUUID();
+            const creditNoteId = crypto.randomUUID();
+            const refStr = `AVOIR-FOURN-${Date.now().toString().slice(-6)}`;
 
-                        // Deduct Stock (Return to Supplier = Stock OUT)
-                        stockLevels[existingLevelIndex] = {
-                            ...stockLevels[existingLevelIndex],
-                            quantity: stockLevels[existingLevelIndex].quantity - item.quantity
-                        };
-                        
-                        productUpdates.push({ ref: productRef, data: { stockLevels } });
+            // 1. Prepare Product Stock Updates (if return)
+            if (type === 'return' && warehouseId) {
+                for (const item of items) {
+                    if (!item.productId || item.quantity <= 0) continue;
+                    
+                    const { data: productData, error: productError } = await supabase
+                        .from('products')
+                        .select('*')
+                        .eq('id', item.productId)
+                        .single();
+                    
+                    if (productError || !productData) {
+                        throw new Error(`Produit ${item.productName} introuvable`);
                     }
+                    
+                    const product = productData as Product;
+                    const stockLevels = [...(product.stockLevels || [])];
+                    const existingLevelIndex = stockLevels.findIndex(sl => sl && sl.warehouseId === warehouseId);
+                    
+                    if (existingLevelIndex === -1 || (Number(stockLevels[existingLevelIndex].quantity) || 0) < item.quantity) {
+                        const current = existingLevelIndex >= 0 ? stockLevels[existingLevelIndex].quantity : 0;
+                        throw new Error(`Stock insuffisant pour ${item.productName} (Disponible: ${current}, Demandé: ${item.quantity})`);
+                    }
+                    
+                    stockLevels[existingLevelIndex] = {
+                        ...stockLevels[existingLevelIndex],
+                        quantity: (Number(stockLevels[existingLevelIndex].quantity) || 0) - item.quantity
+                    };
+                    
+                    const { error: updateProductError } = await supabase
+                        .from('products')
+                        .update({ stockLevels })
+                        .eq('id', item.productId);
+                    
+                    if (updateProductError) throw updateProductError;
                 }
+            }
 
-                // PHASE 2: WRITES
-                // Generate Ref
-                const ref = `AVOIR-FOURN-${Date.now().toString().slice(-6)}`;
-                
-                // Create Payment Record (for Statement)
-                // This mimics "We paid the supplier" or "Supplier gave us credit"
-                // It shows up as a DEBIT in the supplier account (reducing debt).
-                const paymentRef = doc(collection(db, "purchasePayments"));
-                const paymentData: Payment = {
-                    id: paymentRef.id,
+            // 2. Create Payment Record (for Statement)
+            const { error: insertPaymentError } = await supabase
+                .from('purchase_payments')
+                .insert({
+                    id: paymentId,
                     purchaseId: `CREDIT_BALANCE_${supplierId}`,
                     supplierId,
-                    date: new Date().toISOString(),
+                    date: dateStr,
                     amount: totalAmount,
                     method: 'Compte Avoir',
                     createdByUserId: user?.uid || '',
-                    notes: `Avoir Fournisseur: ${ref} - ${reason || ''}`,
+                    notes: `Avoir Fournisseur: ${refStr} - ${reason || ''}`,
                     momoOperator: '',
                     momoNumber: ''
-                };
-                transaction.set(paymentRef, paymentData);
+                });
 
-                // Create Credit Note
-                const newNoteRef = doc(collection(db, "supplierCreditNotes"));
-                // Sanitize items to ensure no undefined values
-                const sanitizedItems = (type === 'return' ? items : []).map(i => ({
-                    productId: i.productId || '',
-                    productName: i.productName || 'Produit Inconnu',
-                    quantity: i.quantity || 0,
-                    price: i.price || 0,
-                    subtotal: i.subtotal || 0
-                }));
+            if (insertPaymentError) throw insertPaymentError;
 
-                const newNote: SupplierCreditNote = {
-                    id: newNoteRef.id,
-                    referenceNumber: ref,
-                    date: new Date().toISOString(),
+            // 3. Create Credit Note
+            const sanitizedItems = (type === 'return' ? items : []).map(i => ({
+                productId: i.productId || '',
+                productName: i.productName || 'Produit Inconnu',
+                quantity: i.quantity || 0,
+                price: i.price || 0,
+                subtotal: i.subtotal || 0
+            }));
+
+            const { error: insertCreditNoteError } = await supabase
+                .from('supplier_credit_notes')
+                .insert({
+                    id: creditNoteId,
+                    referenceNumber: refStr,
+                    date: dateStr,
                     supplierId,
                     warehouseId: type === 'return' ? (warehouseId || '') : '',
                     items: sanitizedItems,
                     amount: totalAmount,
                     reason: reason || '',
-                    paymentId: paymentRef.id,
+                    paymentId: paymentId,
                     createdByUserId: user?.uid || ''
-                };
-                transaction.set(newNoteRef, newNote);
+                });
 
-                // Update Supplier Credit Balance
-                // Supplier Credit Balance = Amount supplier owes us.
-                // We are ADDING to this balance.
-                const currentBalance = Number(supplierData.creditBalance || 0);
-                const newBalance = currentBalance + Number(totalAmount);
-                
-                transaction.update(supplierRef, { creditBalance: newBalance });
+            if (insertCreditNoteError) throw insertCreditNoteError;
 
-                // Update Stock
-                for (const update of productUpdates) {
-                    transaction.update(update.ref, update.data);
-                }
-            });
-            
-            if (navigate) {
-                navigate('/supplier-credit-notes');
-            } else {
-                window.location.href = '/supplier-credit-notes';
-            }
-        } catch (err) {
-            console.error('Erreur détaillée lors de la création de l\'avoir:', err);
-            let errorMessage = 'Erreur inconnue lors de la création de l\'avoir';
-            
-            if (err instanceof Error) {
-                errorMessage = err.message;
-            } else if (typeof err === 'string') {
-                errorMessage = err;
-            }
-            
-            alert(`Erreur: ${errorMessage}`);
+            // 4. Update Supplier Credit Balance
+            const currentBalance = Number(supplierData.creditBalance || 0);
+            const { error: updateSupplierError } = await supabase
+                .from('suppliers')
+                .update({ creditBalance: currentBalance + Number(totalAmount) })
+                .eq('id', supplierId);
+
+            if (updateSupplierError) throw updateSupplierError;
+
+            console.log("✅ Avoir fournisseur et impacts enregistrés avec succès");
+
+            navigate('/supplier-credit-notes');
+        } catch (err: any) {
+            console.error('Erreur lors de la création de l\'avoir fournisseur:', err);
+            alert(`Erreur: ${err.message || "Échec de l'enregistrement"}`);
         } finally {
             setLoading(false);
         }

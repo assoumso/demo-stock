@@ -22,7 +22,7 @@ const LoginPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const { login } = useAuth();
-  const { companyName } = useTheme();
+  const { companyName, logoUrl } = useTheme();
   
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -42,10 +42,18 @@ const LoginPage: React.FC = () => {
       
       <div className="w-full max-w-md p-8 space-y-6 bg-white rounded-3xl shadow-2xl dark:bg-gray-800 border border-primary-200 relative z-10">
         
-        {/* Header with Icon */}
+        {/* Header with Icon/Logo */}
         <div className="text-center">
             <div className="mb-8">
-              <img src="/logo.png" alt="Logo de l'application" className="h-24 mx-auto" />
+              {logoUrl ? (
+                <img src={logoUrl} alt="Logo de l'application" className="h-24 mx-auto object-contain" />
+              ) : (
+                <div className="flex justify-center">
+                  <div className="p-4 bg-primary-100 rounded-2xl shadow-inner">
+                    <SupermarketIcon className="h-20 w-20" />
+                  </div>
+                </div>
+              )}
             </div>
             <h1 
                 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-primary-700 to-primary-500 uppercase tracking-tight mb-2"
@@ -97,8 +105,23 @@ const LoginPage: React.FC = () => {
           </button>
         </form>
 
-        <div className="pt-6 border-t border-gray-100 dark:border-gray-700 text-center">
-            <p className="text-xs text-gray-400 font-medium">© {new Date().getFullYear()} {companyName}</p>
+        <div className="pt-6 border-t border-gray-100 dark:border-gray-700">
+            <div className="mb-4 p-4 bg-amber-50 rounded-xl border border-amber-100">
+                <p className="text-xs font-bold text-amber-800 uppercase tracking-wider mb-2 text-center">🔐 Accès Démonstration</p>
+                <div className="grid grid-cols-2 gap-3 text-center">
+                    <div className="p-2 bg-white rounded-lg shadow-sm">
+                        <p className="text-[10px] text-gray-500 font-bold uppercase">Administrateur</p>
+                        <p className="text-xs font-black text-primary-700">admin / password</p>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg shadow-sm">
+                        <p className="text-[10px] text-gray-500 font-bold uppercase">Utilisateur</p>
+                        <p className="text-xs font-black text-primary-700">user / password</p>
+                    </div>
+                </div>
+            </div>
+            <div className="text-center">
+                <p className="text-xs text-gray-400 font-medium">© {new Date().getFullYear()} {companyName}</p>
+            </div>
         </div>
       </div>
     </div>

@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { mockOrders } from '../data/mockData';
 import { Order } from '../types';
-import { formatCurrency } from '../utils/formatters';
+import { formatCurrency, formatDate } from '../utils/formatters';
 import Modal from '../components/Modal';
 import { OrderListPrint } from '../components/OrderListPrint';
 import { PrintIcon } from '../constants';
@@ -12,7 +12,8 @@ const OrdersPage: React.FC = () => {
   const printRef = useRef<HTMLDivElement>(null);
   
   const handlePrint = useReactToPrint({
-    content: () => printRef.current,
+    contentRef: printRef,
+    documentTitle: `Journal_Commandes_${new Date().toISOString().split('T')[0]}`,
   });
 
   const totalAmount = mockOrders.reduce((sum, order) => sum + order.total, 0);
@@ -45,7 +46,7 @@ const OrdersPage: React.FC = () => {
               <tr key={order.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30">
                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-primary-600 dark:text-primary-400 hover:underline cursor-pointer">{order.orderNumber}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">{order.customerName}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">{new Date(order.createdAt).toLocaleDateString()}</td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">{formatDate(order.createdAt)}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300 font-bold">{formatCurrency(order.total)}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm">
                     <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${

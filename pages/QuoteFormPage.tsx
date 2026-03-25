@@ -1,16 +1,19 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { db } from '../firebase';
-import { collection, doc, getDoc, getDocs, addDoc, updateDoc, setDoc } from 'firebase/firestore';
+import { supabase } from '../supabase';
 import { Quote, QuoteItem, Product, Customer, QuoteStatus, AppSettings, Sale } from '../types';
-import { DeleteIcon, PlusIcon, SaveIcon, PrintIcon, CheckIcon, ArrowRightIcon, PurchaseIcon } from '../constants';
+import { DeleteIcon, PlusIcon, SaveIcon, PrintIcon, CheckIcon, ArrowRightIcon, PurchaseIcon, WarningIcon } from '../constants';
 import { useAuth } from '../hooks/useAuth';
+import { useData } from '../context/DataContext';
 import { formatCurrency } from '../utils/formatters';
 import { useReactToPrint } from 'react-to-print';
 
 // Placeholder for QuotePrint component
-const QuotePrint = React.forwardRef<HTMLDivElement, { quote: Quote, customer?: Customer, settings?: any }>(({ quote, customer, settings }, ref) => {
+const QuotePrint = React.forwardRef<HTMLDivElement, { quote: Quote, customer?: Customer, settings?: any, products: Product[] }>(({ quote, customer, settings, products }, ref) => {
+    
+    const getProductName = (id: string) => products.find(p => p.id === id)?.name || id;
+
     return (
         <div ref={ref} className="p-8 bg-white text-black print:text-black">
             <div className="flex justify-between items-start mb-8">
@@ -46,7 +49,7 @@ const QuotePrint = React.forwardRef<HTMLDivElement, { quote: Quote, customer?: C
                 <tbody>
                     {quote.items.map((item, index) => (
                         <tr key={index} className="border-b border-gray-100">
-                            <td className="py-3 text-sm">{item.productId}</td> 
+                            <td className="py-3 text-sm">{getProductName(item.productId)}</td> 
                             <td className="py-3 text-right text-sm">{item.quantity}</td>
                             <td className="py-3 text-right text-sm">{formatCurrency(item.price)}</td>
                             <td className="py-3 text-right font-bold text-sm">{formatCurrency(item.subtotal)}</td>
@@ -79,11 +82,8 @@ const QuoteFormPage: React.FC = () => {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
     const { user } = useAuth();
+    const { products, customers, settings, loading: dataLoading } = useData();
     const isEditing = !!id;
-
-    const [customers, setCustomers] = useState<Customer[]>([]);
-    const [products, setProducts] = useState<Product[]>([]);
-    const [settings, setSettings] = useState<AppSettings | null>(null);
 
     const [formState, setFormState] = useState<Omit<Quote, 'id'>>({
         referenceNumber: '',
@@ -102,46 +102,42 @@ const QuoteFormPage: React.FC = () => {
     const [productSearch, setProductSearch] = useState('');
     const [customerSearchTerm, setCustomerSearchTerm] = useState('');
     const [showCustomerSuggestions, setShowCustomerSuggestions] = useState(false);
+    const [showProductSuggestions, setShowProductSuggestions] = useState(false);
     
     // Printing
     const printRef = useRef<HTMLDivElement>(null);
     const handlePrint = useReactToPrint({
-        content: () => printRef.current,
+        contentRef: printRef,
         documentTitle: `Devis_${formState.referenceNumber}`,
     });
 
     useEffect(() => {
-        const fetchData = async () => {
+        const initForm = async () => {
+            if (dataLoading) return;
+
             setLoading(true);
             try {
-                const [customersSnap, productsSnap, settingsSnap] = await Promise.all([
-                    getDocs(collection(db, "customers")),
-                    getDocs(collection(db, "products")),
-                    getDoc(doc(db, "settings", "app-config"))
-                ]);
-
-                const custList = customersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Customer));
-                setCustomers(custList);
-                setProducts(productsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product)));
-                
-                const appSettings = settingsSnap.exists() ? settingsSnap.data() as AppSettings : null;
-                setSettings(appSettings);
-
                 if (isEditing) {
-                    const docSnap = await getDoc(doc(db, "quotes", id!));
-                    if (docSnap.exists()) {
-                        const data = docSnap.data() as Omit<Quote, 'id'>;
-                        setFormState(data);
-                        const cust = custList.find(c => c.id === data.customerId);
-                        if (cust) setCustomerSearchTerm(cust.name);
-                    } else {
+                    const { data: quoteData, error: quoteError } = await supabase
+                        .from('quotes')
+                        .select('*')
+                        .eq('id', id)
+                        .single();
+                    
+                    if (quoteError || !quoteData) {
                         setError("Devis introuvable.");
+                    } else {
+                        setFormState(quoteData as Omit<Quote, 'id'>);
+                        const cust = customers.find(c => c.id === quoteData.customerId);
+                        if (cust) setCustomerSearchTerm(cust.name);
                     }
                 } else {
-                    setFormState(prev => ({
-                        ...prev,
-                        referenceNumber: `DEV-${Date.now()}`,
-                    }));
+                    if (!formState.referenceNumber) {
+                        setFormState(prev => ({
+                            ...prev,
+                            referenceNumber: `DEV-${Date.now()}`,
+                        }));
+                    }
                 }
             } catch (err) {
                 console.error(err);
@@ -150,8 +146,8 @@ const QuoteFormPage: React.FC = () => {
                 setLoading(false);
             }
         };
-        fetchData();
-    }, [id, isEditing]);
+        initForm();
+    }, [id, isEditing, dataLoading, customers]);
 
     const handleAddItem = (product: Product) => {
         setFormState(prev => {
@@ -166,6 +162,7 @@ const QuoteFormPage: React.FC = () => {
             return { ...prev, items: newItems, grandTotal };
         });
         setProductSearch('');
+        setShowProductSuggestions(false);
     };
 
     const handleUpdateItem = (index: number, field: keyof QuoteItem, value: number) => {
@@ -198,60 +195,43 @@ const QuoteFormPage: React.FC = () => {
             alert("Veuillez sélectionner un client et ajouter des articles.");
             return;
         }
+        
+        const now = new Date();
+        const quoteToSave: any = {
+            ...formState,
+            date: formState.date.includes('T') ? formState.date : `${formState.date}T${now.toISOString().split('T')[1]}`,
+            validUntil: formState.validUntil.includes('T') ? formState.validUntil : `${formState.validUntil}T${now.toISOString().split('T')[1]}`
+        };
 
         try {
             if (isEditing) {
-                await updateDoc(doc(db, "quotes", id!), formState);
+                const { error: updateError } = await supabase
+                    .from('quotes')
+                    .update(quoteToSave)
+                    .eq('id', id);
+                if (updateError) throw updateError;
             } else {
-                await addDoc(collection(db, "quotes"), formState);
+                const newId = crypto.randomUUID();
+                const { error: insertError } = await supabase
+                    .from('quotes')
+                    .insert({ id: newId, ...quoteToSave });
+                if (insertError) throw insertError;
             }
             navigate('/quotes');
-        } catch (err) {
+        } catch (err: any) {
             console.error(err);
-            alert("Erreur lors de l'enregistrement.");
+            alert(`Erreur lors de l'enregistrement: ${err.message || JSON.stringify(err)}`);
         }
     };
 
-    const handleConvertToSale = async () => {
+    const handleConvertToSale = () => {
         if (!id) return;
-        if (!window.confirm("Voulez-vous convertir ce devis en vente ? Cela créera une nouvelle vente et marquera le devis comme 'Converti'.")) return;
-
-        try {
-            // Create Sale
-            const saleData: Omit<Sale, 'id'> = {
-                referenceNumber: `VNT-${Date.now()}`,
-                customerId: formState.customerId,
-                warehouseId: '', // Needs to be selected or default
-                date: new Date().toISOString().split('T')[0],
-                items: formState.items.map(i => ({ productId: i.productId, quantity: i.quantity, price: i.price, subtotal: i.subtotal })),
-                grandTotal: formState.grandTotal,
-                paidAmount: 0,
-                paymentStatus: 'En attente',
-                saleStatus: 'En attente',
-                notes: `Converti depuis le devis ${formState.referenceNumber}. ${formState.notes || ''}`
-            };
-
-            // Get default warehouse if possible
-            const warehousesSnap = await getDocs(collection(db, "warehouses"));
-            if (!warehousesSnap.empty) {
-                saleData.warehouseId = warehousesSnap.docs[0].id;
-            }
-
-            const saleRef = await addDoc(collection(db, "sales"), saleData);
-
-            // Update Quote status
-            await updateDoc(doc(db, "quotes", id), {
-                status: 'Converti',
-                convertedSaleId: saleRef.id
-            });
-
-            alert("Devis converti avec succès !");
-            navigate(`/sales/edit/${saleRef.id}`);
-
-        } catch (err) {
-            console.error(err);
-            alert("Erreur lors de la conversion.");
-        }
+        // We pass the current quote state to the sale form
+        navigate('/sales/new', { 
+            state: { 
+                fromQuote: { id, ...formState } 
+            } 
+        });
     };
 
     const handleConvertToPurchase = () => {
@@ -265,15 +245,19 @@ const QuoteFormPage: React.FC = () => {
     };
 
     const filteredProducts = useMemo(() => {
-        if (!productSearch) return [];
+        if (!productSearch) {
+            return showProductSuggestions ? products.slice(0, 20) : [];
+        }
         const lower = productSearch.toLowerCase();
-        return products.filter(p => p.name.toLowerCase().includes(lower) || p.sku.toLowerCase().includes(lower)).slice(0, 10);
-    }, [products, productSearch]);
+        return products.filter(p => p.name.toLowerCase().includes(lower) || p.sku.toLowerCase().includes(lower)).slice(0, 20);
+    }, [products, productSearch, showProductSuggestions]);
 
     const filteredCustomers = useMemo(() => {
-        if (!customerSearchTerm) return [];
-        return customers.filter(c => c.name.toLowerCase().includes(customerSearchTerm.toLowerCase())).slice(0, 10);
-    }, [customers, customerSearchTerm]);
+        if (!customerSearchTerm) {
+            return showCustomerSuggestions ? customers.slice(0, 20) : [];
+        }
+        return customers.filter(c => c.name.toLowerCase().includes(customerSearchTerm.toLowerCase())).slice(0, 20);
+    }, [customers, customerSearchTerm, showCustomerSuggestions]);
 
     const getProductName = (id: string) => products.find(p => p.id === id)?.name || id;
 
@@ -307,6 +291,20 @@ const QuoteFormPage: React.FC = () => {
                 </div>
             </div>
 
+            {formState.status === 'Converti' && (
+                <div className="mb-6 p-4 bg-yellow-50 dark:bg-yellow-900/20 border-2 border-yellow-200 dark:border-yellow-800 rounded-2xl flex items-center gap-4 text-yellow-800 dark:text-yellow-200 shadow-lg animate-in fade-in slide-in-from-top-4 duration-500">
+                    <div className="bg-yellow-100 dark:bg-yellow-800 p-2 rounded-xl">
+                        <WarningIcon className="w-5 h-5 flex-shrink-0" />
+                    </div>
+                    <div>
+                        <p className="text-sm font-black uppercase tracking-tight">Attention : Devis déjà converti</p>
+                        <p className="text-xs font-bold opacity-80 uppercase leading-tight mt-1">
+                            Toute modification apportée ici ne sera pas répercutée sur la facture (Vente ou Achat) déjà générée.
+                        </p>
+                    </div>
+                </div>
+            )}
+
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="lg:col-span-2 space-y-6">
                     {/* Items Section */}
@@ -317,11 +315,18 @@ const QuoteFormPage: React.FC = () => {
                                 type="text" 
                                 placeholder="Rechercher par nom ou SKU..." 
                                 value={productSearch}
-                                onChange={(e) => setProductSearch(e.target.value)}
+                                onChange={(e) => {
+                                    setProductSearch(e.target.value);
+                                    setShowProductSuggestions(true);
+                                }}
+                                onFocus={() => setShowProductSuggestions(true)}
                                 className="w-full px-4 py-2 bg-gray-50 dark:bg-gray-900 rounded-xl border-none focus:ring-2 focus:ring-primary-500"
                             />
-                            {productSearch && filteredProducts.length > 0 && (
+                            {showProductSuggestions && filteredProducts.length > 0 && (
                                 <div className="absolute z-10 w-full mt-1 bg-white dark:bg-gray-800 shadow-xl rounded-xl border dark:border-gray-700 max-h-60 overflow-auto">
+                                    <div className="flex justify-end p-2 border-b dark:border-gray-700 sticky top-0 bg-white dark:bg-gray-800 z-20">
+                                        <button onClick={() => setShowProductSuggestions(false)} className="text-xs text-red-500 font-bold uppercase hover:underline">Fermer</button>
+                                    </div>
                                     {filteredProducts.map(product => (
                                         <div 
                                             key={product.id} 
@@ -422,6 +427,9 @@ const QuoteFormPage: React.FC = () => {
                                 />
                                 {showCustomerSuggestions && filteredCustomers.length > 0 && (
                                     <div className="absolute z-10 w-full mt-1 bg-white dark:bg-gray-800 shadow-xl rounded-xl border dark:border-gray-700 max-h-40 overflow-auto">
+                                        <div className="flex justify-end p-2 border-b dark:border-gray-700 sticky top-0 bg-white dark:bg-gray-800 z-20">
+                                            <button onClick={() => setShowCustomerSuggestions(false)} className="text-xs text-red-500 font-bold uppercase hover:underline">Fermer</button>
+                                        </div>
                                         {filteredCustomers.map(c => (
                                             <div 
                                                 key={c.id} 
@@ -445,7 +453,7 @@ const QuoteFormPage: React.FC = () => {
                                     <label className="block text-xs font-black uppercase text-gray-500 mb-1">Date</label>
                                     <input 
                                         type="date" 
-                                        value={formState.date} 
+                                        value={formState.date ? formState.date.split('T')[0] : ''} 
                                         onChange={(e) => setFormState(prev => ({ ...prev, date: e.target.value }))}
                                         className="w-full px-4 py-2 bg-gray-50 dark:bg-gray-900 rounded-xl border-none focus:ring-2 focus:ring-primary-500 font-medium"
                                     />
@@ -454,7 +462,7 @@ const QuoteFormPage: React.FC = () => {
                                     <label className="block text-xs font-black uppercase text-gray-500 mb-1">Valide jusqu'au</label>
                                     <input 
                                         type="date" 
-                                        value={formState.validUntil} 
+                                        value={formState.validUntil ? formState.validUntil.split('T')[0] : ''} 
                                         onChange={(e) => setFormState(prev => ({ ...prev, validUntil: e.target.value }))}
                                         className="w-full px-4 py-2 bg-gray-50 dark:bg-gray-900 rounded-xl border-none focus:ring-2 focus:ring-primary-500 font-medium"
                                     />
@@ -510,6 +518,7 @@ const QuoteFormPage: React.FC = () => {
                     quote={{ id: id || 'new', ...formState } as Quote} 
                     customer={customers.find(c => c.id === formState.customerId)}
                     settings={settings}
+                    products={products}
                 />
             </div>
         </div>

@@ -1,0 +1,59 @@
+﻿components/AutoMigration.tsx(26,28): error TS2339: Property 'alreadyApplied' does not exist on type '{ success: boolean; alreadyExists: boolean; needsManualMigration?: undefined; sql?: undefined; error?: undefined; } | { success: boolean; needsManualMigration: boolean; sql: string; alreadyExists?: undefined; error?: undefined; } | { ...; }'.
+  Property 'alreadyApplied' does not exist on type '{ success: boolean; alreadyExists: boolean; needsManualMigration?: undefined; sql?: undefined; error?: undefined; }'.
+components/CreditNoteListPrint.tsx(56,83): error TS2339: Property 'type' does not exist on type 'CreditNote'.
+components/CreditNoteListPrint.tsx(58,54): error TS2339: Property 'total' does not exist on type 'CreditNote'.
+components/CreditNoteListPrint.tsx(62,42): error TS2339: Property 'status' does not exist on type 'CreditNote'.
+components/CreditNoteListPrint.tsx(65,43): error TS2339: Property 'status' does not exist on type 'CreditNote'.
+components/CreditNoteListPrint.tsx(75,85): error TS2339: Property 'total' does not exist on type 'CreditNote'.
+components/SupplierCreditNotePrint.tsx(82,77): error TS2339: Property 'footerText' does not exist on type 'AppSettings'.
+pages/CreditNotesPage.tsx(154,40): error TS2552: Cannot find name 'setIsListPrintModalOpen'. Did you mean 'setPrintModalOpen'?
+pages/CustomerAccountPage.tsx(313,29): error TS2322: Type '"Non pay├®"' is not assignable to type 'PaymentStatus'.
+pages/CustomersPage.tsx(20,26): error TS2339: Property 'FixedSizeList' does not exist on type 'typeof import("D:/PROJETS_AI/ETS-COUL&FRERES-TECH/node_modules/react-window/dist/react-window")'.
+pages/CustomersPage.tsx(166,34): error TS2339: Property 'saleId' does not exist on type 'Payment'.
+pages/CustomersPage.tsx(485,26): error TS2322: Type '{ children: ({ height, width }: { height: any; width: any; }) => Element; }' is not assignable to type 'IntrinsicAttributes & AutoSizerProps'.
+pages/InventoryPage.tsx(13,26): error TS2339: Property 'FixedSizeList' does not exist on type 'typeof import("D:/PROJETS_AI/ETS-COUL&FRERES-TECH/node_modules/react-window/dist/react-window")'.
+pages/InventoryPage.tsx(235,26): error TS2322: Type '{ children: ({ height, width }: { height: any; width: any; }) => Element; }' is not assignable to type 'IntrinsicAttributes & AutoSizerProps'.
+pages/OrdersPage.tsx(76,25): error TS2741: Property 'settings' is missing in type '{ ref: RefObject<HTMLDivElement>; orders: Order[]; }' but required in type 'OrderListPrintProps'.
+pages/PaymentsPage.tsx(172,33): error TS2349: This expression is not callable.
+  No constituent of type '"sales" | "purchases"' is callable.
+pages/PaymentsPage.tsx(172,48): error TS2552: Cannot find name 'collectionName'. Did you mean 'collection'?
+pages/PaymentsPage.tsx(636,29): error TS2339: Property 'isArchived' does not exist on type 'Supplier'.
+pages/PaymentsPage.tsx(884,110): error TS2339: Property 'isArchived' does not exist on type 'Customer | Supplier'.
+  Property 'isArchived' does not exist on type 'Supplier'.
+pages/PaymentsPage.tsx(885,62): error TS2339: Property 'isArchived' does not exist on type 'Customer | Supplier'.
+  Property 'isArchived' does not exist on type 'Supplier'.
+pages/PosPage.tsx(216,40): error TS2339: Property 'isArchived' does not exist on type 'Product'.
+pages/PosPage.tsx(253,19): error TS2339: Property 'isArchived' does not exist on type 'Product'.
+pages/PosPage.tsx(538,26): error TS2304: Cannot find name 'customerData'.
+pages/PosPage.tsx(541,45): error TS2304: Cannot find name 'customerData'.
+pages/PosPage.tsx(714,41): error TS2322: Type 'Partial<AppSettings>' is not assignable to type 'AppSettings'.
+  Property 'id' is optional in type 'Partial<AppSettings>' but required in type 'AppSettings'.
+pages/PosPageSimple.tsx(130,62): error TS2339: Property 'unitPrice' does not exist on type 'SaleItem'.
+pages/PosPageSimple.tsx(149,17): error TS2322: Type 'SaleItem | { productId: string; quantity: number; unitPrice: any; product: Product; }' is not assignable to type 'SaleItem'.
+  Object literal may only specify known properties, and 'unitPrice' does not exist in type 'SaleItem'.
+pages/PosPageSimple.tsx(149,17): error TS2353: Object literal may only specify known properties, and 'unitPrice' does not exist in type 'SaleItem'.
+pages/PosPageSimple.tsx(149,36): error TS2339: Property 'sellingPrice' does not exist on type 'Product'.
+pages/PosPageSimple.tsx(275,51): error TS2551: Property 'product' does not exist on type 'SaleItem'. Did you mean 'productId'?
+pages/PosPageSimple.tsx(301,66): error TS2339: Property 'unitPrice' does not exist on type 'SaleItem'.
+pages/ProductsPage.tsx(19,26): error TS2339: Property 'FixedSizeList' does not exist on type 'typeof import("D:/PROJETS_AI/ETS-COUL&FRERES-TECH/node_modules/react-window/dist/react-window")'.
+pages/ProductsPage.tsx(500,30): error TS2322: Type '{ children: ({ height, width }: { height: any; width: any; }) => Element; }' is not assignable to type 'IntrinsicAttributes & AutoSizerProps'.
+pages/ProductsPage.tsx(663,143): error TS2339: Property 'costPrice' does not exist on type 'Product'.
+pages/PurchasesPage.tsx(20,26): error TS2339: Property 'FixedSizeList' does not exist on type 'typeof import("D:/PROJETS_AI/ETS-COUL&FRERES-TECH/node_modules/react-window/dist/react-window")'.
+pages/PurchasesPage.tsx(442,40): error TS2552: Cannot find name 'setIsPrintModalOpen'. Did you mean 'setIsPaymentModalOpen'?
+pages/PurchasesPage.tsx(479,26): error TS2322: Type '{ children: ({ height, width }: { height: any; width: any; }) => Element; }' is not assignable to type 'IntrinsicAttributes & AutoSizerProps'.
+pages/PurchasesPage.tsx(546,25): error TS2322: Type '{ currentPage: number; totalPages: number; onPageChange: Dispatch<SetStateAction<number>>; itemsPerPage: number; onItemsPerPageChange: Dispatch<SetStateAction<number>>; totalItems: number; }' is not assignable to type 'IntrinsicAttributes & PaginationProps'.
+  Property 'onItemsPerPageChange' does not exist on type 'IntrinsicAttributes & PaginationProps'.
+pages/SaleFormPage.tsx(36,63): error TS2339: Property 'id' does not exist on type 'AuthenticatedUser'.
+pages/SaleFormPage.tsx(629,89): error TS2552: Cannot find name 'PaymentMethod'. Did you mean 'PaymentMethodData'?
+pages/SalesPage.tsx(19,26): error TS2339: Property 'FixedSizeList' does not exist on type 'typeof import("D:/PROJETS_AI/ETS-COUL&FRERES-TECH/node_modules/react-window/dist/react-window")'.
+pages/SalesPage.tsx(439,34): error TS2322: Type '{ children: ({ height, width }: { height: any; width: any; }) => Element; }' is not assignable to type 'IntrinsicAttributes & AutoSizerProps'.
+pages/SettingsPage.tsx(56,26): error TS2345: Argument of type 'string' is not assignable to parameter of type 'ThemeName'.
+pages/SupplierAccountPage.tsx(234,16): error TS2339: Property 'id' does not exist on type 'AccountMovement'.
+pages/SuppliersPage.tsx(16,26): error TS2339: Property 'FixedSizeList' does not exist on type 'typeof import("D:/PROJETS_AI/ETS-COUL&FRERES-TECH/node_modules/react-window/dist/react-window")'.
+pages/SuppliersPage.tsx(387,26): error TS2322: Type '{ children: ({ height, width }: { height: any; width: any; }) => Element; }' is not assignable to type 'IntrinsicAttributes & AutoSizerProps'.
+pages/SuppliersPage.tsx(478,26): error TS2739: Type '{ currentPage: number; totalPages: number; onPageChange: Dispatch<SetStateAction<number>>; }' is missing the following properties from type 'PaginationProps': totalItems, itemsPerPage
+supabase.ts(5,33): error TS2339: Property 'env' does not exist on type 'ImportMeta'.
+supabase.ts(6,33): error TS2339: Property 'env' does not exist on type 'ImportMeta'.
+utils/whatsappUtils.ts(147,21): error TS2339: Property 'html2canvas' does not exist on type 'Window & typeof globalThis'.
+utils/whatsappUtils.ts(166,21): error TS2339: Property 'jspdf' does not exist on type 'Window & typeof globalThis'.
+utils/whatsappUtils.ts(166,38): error TS2339: Property 'jspdf' does not exist on type 'Window & typeof globalThis'.

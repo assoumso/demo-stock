@@ -1,25 +1,23 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { db } from '../firebase';
-import { collection, getDocs, doc, deleteDoc, query, orderBy, runTransaction } from 'firebase/firestore';
+import { supabase } from '../supabase';
 import { CreditNote, Customer, AppSettings } from '../types';
 import { useAuth } from '../hooks/useAuth';
+import { useData } from '../context/DataContext';
 import { Pagination } from '../components/Pagination';
 import { PlusIcon, EditIcon, DeleteIcon, SearchIcon, DocumentTextIcon, PrintIcon } from '../constants';
 import Modal from '../components/Modal';
 import { CreditNotePrint } from '../components/CreditNotePrint';
 import { CreditNoteListPrint } from '../components/CreditNoteListPrint';
 import { useReactToPrint } from 'react-to-print';
-import { formatCurrency } from '../utils/formatters';
+import { formatCurrency, formatDate } from '../utils/formatters';
 
 const CreditNotesPage: React.FC = () => {
     const { user } = useAuth();
     const navigate = useNavigate();
+    const { customers, settings } = useData();
 
     const [creditNotes, setCreditNotes] = useState<CreditNote[]>([]);
-    const [customers, setCustomers] = useState<Customer[]>([]);
-    const [settings, setSettings] = useState<AppSettings | null>(null);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
     const [currentPage, setCurrentPage] = useState(1);
@@ -32,37 +30,25 @@ const CreditNotesPage: React.FC = () => {
 
     // Printing
     const [printModalOpen, setPrintModalOpen] = useState(false);
+    const [isListPrintModalOpen, setIsListPrintModalOpen] = useState(false);
     const [noteToPrint, setNoteToPrint] = useState<CreditNote | null>(null);
     const printRef = React.useRef<HTMLDivElement>(null);
     const handlePrint = useReactToPrint({ contentRef: printRef });
 
     useEffect(() => {
         fetchData();
-        fetchSettings();
     }, []);
-
-    const fetchSettings = async () => {
-        try {
-            const snap = await getDocs(collection(db, "appSettings"));
-            if (!snap.empty) setSettings({ id: snap.docs[0].id, ...snap.docs[0].data() } as AppSettings);
-        } catch (err) {
-            console.error("Error fetching settings:", err);
-        }
-    };
 
     const fetchData = async () => {
         setLoading(true);
         try {
-            const [notesSnap, customersSnap] = await Promise.all([
-                getDocs(query(collection(db, "creditNotes"), orderBy("date", "desc"))),
-                getDocs(collection(db, "customers"))
-            ]);
+            const { data, error: fetchError } = await supabase
+                .from('credit_notes')
+                .select('*')
+                .order('date', { ascending: false });
             
-            const notesData = notesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as CreditNote));
-            const customersData = customersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Customer));
-
-            setCreditNotes(notesData);
-            setCustomers(customersData);
+            if (fetchError) throw fetchError;
+            setCreditNotes(data || []);
         } catch (err) {
             console.error("Error fetching credit notes:", err);
         } finally {
@@ -100,41 +86,46 @@ const CreditNotesPage: React.FC = () => {
         if (!noteToDelete) return;
         setIsDeleting(true);
         try {
-            await runTransaction(db, async (transaction) => {
-                // 1. Get current customer data
-                const customerRef = doc(db, "customers", noteToDelete.customerId);
-                const customerSnap = await transaction.get(customerRef);
-                
-                if (!customerSnap.exists()) throw new Error("Client introuvable");
-                
-                const customerData = customerSnap.data() as Customer;
-                const currentCredit = customerData.creditBalance || 0;
+            // 1. Get current customer data from Supabase
+            const { data: customerData, error: customerError } = await supabase
+                .from('customers')
+                .select('*')
+                .eq('id', noteToDelete.customerId)
+                .single();
+            
+            if (customerError || !customerData) throw new Error("Client introuvable");
+            
+            const currentCredit = Number(customerData.creditBalance || 0);
 
-                // 2. Verify if we can deduct the credit (has it been used?)
-                // Actually, if we delete a credit note, we are saying "This credit was invalid".
-                // So we must reduce the customer's credit balance.
-                // If the customer has already used it, their balance might go negative?
-                // Or we should prevent deletion if balance < amount.
-                
-                if (currentCredit < noteToDelete.amount) {
-                    throw new Error(`Impossible de supprimer cette note : le crédit a déjà été utilisé (Solde actuel: ${formatCurrency(currentCredit)}).`);
-                }
+            // 2. Verify if we can deduct the credit (has it been used?)
+            if (currentCredit < noteToDelete.amount) {
+                throw new Error(`Impossible de supprimer cette note : le crédit a déjà été utilisé (Solde actuel: ${formatCurrency(currentCredit)}).`);
+            }
 
-                // 3. Update customer balance
-                transaction.update(customerRef, {
-                    creditBalance: currentCredit - noteToDelete.amount
-                });
+            // 3. Update customer balance
+            const { error: balanceError } = await supabase
+                .from('customers')
+                .update({ creditBalance: currentCredit - noteToDelete.amount })
+                .eq('id', noteToDelete.customerId);
+            
+            if (balanceError) throw balanceError;
 
-                // 4. Delete the note
-                const noteRef = doc(db, "creditNotes", noteToDelete.id);
-                transaction.delete(noteRef);
-                
-                // 5. Delete linked payment if exists
-                if (noteToDelete.paymentId) {
-                     const paymentRef = doc(db, "salePayments", noteToDelete.paymentId);
-                     transaction.delete(paymentRef);
-                }
-            });
+            // 4. Delete the note
+            const { error: deleteNoteError } = await supabase
+                .from('credit_notes')
+                .delete()
+                .eq('id', noteToDelete.id);
+            
+            if (deleteNoteError) throw deleteNoteError;
+            
+            // 5. Delete linked payment if exists
+            if (noteToDelete.paymentId) {
+                const { error: deletePaymentError } = await supabase
+                    .from('sale_payments')
+                    .delete()
+                    .eq('id', noteToDelete.paymentId);
+                if (deletePaymentError) throw deletePaymentError;
+            }
             
             setCreditNotes(prev => prev.filter(n => n.id !== noteToDelete.id));
             setDeleteModalOpen(false);
@@ -145,8 +136,6 @@ const CreditNotesPage: React.FC = () => {
             setIsDeleting(false);
         }
     };
-
-    const formatDate = (date: string) => new Date(date).toLocaleDateString('fr-FR');
 
     return (
         <div className="p-6">

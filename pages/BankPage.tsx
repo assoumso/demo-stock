@@ -1,15 +1,13 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { db, storage } from '../firebase';
-import { collection, getDocs, addDoc, deleteDoc, doc, updateDoc, query, orderBy, getDoc } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { supabase } from '../supabase';
 import { BankTransaction, AppSettings } from '../types';
 import { useAuth } from '../hooks/useAuth';
 import Modal from '../components/Modal';
 import { PlusIcon, DeleteIcon, SearchIcon, BankIcon, SettingsIcon, TrendingUpIcon, DocumentTextIcon, PrintIcon } from '../constants';
 import { useReactToPrint } from 'react-to-print';
 import { BankTransactionNote } from '../components/BankTransactionNote';
-import { formatCurrency } from '../utils/formatters';
+import { formatCurrency, formatDate } from '../utils/formatters';
 
 const BankPage: React.FC = () => {
     const { user, hasPermission } = useAuth();
@@ -23,7 +21,8 @@ const BankPage: React.FC = () => {
     const printRef = React.useRef<HTMLDivElement>(null);
 
     const handlePrint = useReactToPrint({
-        content: () => printRef.current,
+        contentRef: printRef,
+        documentTitle: `Journal_Banque_${new Date().toISOString().split('T')[0]}`,
         onAfterPrint: () => setTransactionToPrint(null),
     });
 
@@ -59,25 +58,27 @@ const BankPage: React.FC = () => {
     const fetchData = async () => {
         setLoading(true);
         try {
-            // Fetch Settings
-            const settingsSnap = await getDoc(doc(db, 'settings', 'app-config'));
-            if (settingsSnap.exists()) {
-                const data = { id: settingsSnap.id, ...settingsSnap.data() } as AppSettings;
-                setSettings(data);
+            const { data: setts, error: settsErr } = await supabase.from('app_settings').select('*').limit(1).single();
+            
+            if (!settsErr && setts) {
+                setSettings(setts as AppSettings);
                 setOpeningBalanceForm({
-                    amount: data.bankOpeningBalance || 0,
-                    date: data.bankOpeningBalanceDate || new Date().toISOString().split('T')[0]
+                    amount: setts.bankOpeningBalance || 0,
+                    date: setts.bankOpeningBalanceDate || new Date().toISOString().split('T')[0]
                 });
             }
 
-            // Fetch Transactions
-            const q = query(collection(db, 'bankTransactions'), orderBy('date', 'desc'));
-            const snapshot = await getDocs(q);
-            const data = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as BankTransaction));
-            setTransactions(data);
-        } catch (err) {
-            console.error(err);
-            setError("Erreur lors du chargement des données bancaires.");
+            const { data: transData, error: transErr } = await supabase
+                .from('bank_transactions')
+                .select('*')
+                .order('date', { ascending: false });
+            
+            if (transErr) throw transErr;
+            
+            setTransactions(transData as BankTransaction[]);
+        } catch (err: any) {
+            console.error('❌ Erreur lors du chargement des données bancaires:', err);
+            setError(err.message || "Erreur lors du chargement des données bancaires.");
         } finally {
             setLoading(false);
         }
@@ -89,69 +90,53 @@ const BankPage: React.FC = () => {
 
     const handleAddTransaction = async (e: React.FormEvent) => {
         e.preventDefault();
-        setError(null); // Réinitialiser les erreurs
+        setError(null);
 
-        // 1. Vérification Utilisateur
-        if (!user || !user.uid) {
-            setError("Utilisateur non authentifié. Veuillez vous reconnecter.");
+        if (!user) {
+            setError("Utilisateur non authentifié.");
             return;
         }
         
-        // 2. Conversion et Validation Montant
         const amountVal = parseFloat(String(newTransaction.amount || '0'));
         if (isNaN(amountVal) || amountVal <= 0) {
             setError("Le montant doit être un nombre positif.");
             return;
         }
 
-        // 3. Validation Description
         if (!newTransaction.description?.trim()) {
             setError("La description est obligatoire.");
             return;
         }
 
         setLoading(true);
-        console.log("Début de l'enregistrement de la transaction...");
 
         try {
             let attachmentUrl = '';
             
-            // 4. Upload Fichier (si présent)
             if (attachmentFile) {
-                console.log("Fichier détecté, tentative d'upload...", attachmentFile.name);
                 try {
-                    const storageRef = ref(storage, `bank_attachments/${Date.now()}_${attachmentFile.name}`);
+                    const filePath = `bank_attachments/${Date.now()}_${attachmentFile.name}`;
+                    const { error: uploadError } = await supabase.storage.from('bank').upload(filePath, attachmentFile);
+                    if (uploadError) throw uploadError;
                     
-                    // Ajout d'un timeout pour l'upload (10 secondes)
-                    const uploadPromise = uploadBytes(storageRef, attachmentFile);
-                    const timeoutPromise = new Promise((_, reject) => 
-                        setTimeout(() => reject(new Error("Délai d'attente dépassé pour l'envoi du fichier (10s). Vérifiez votre connexion.")), 10000)
-                    );
-
-                    await Promise.race([uploadPromise, timeoutPromise]);
-                    console.log("Upload réussi, récupération URL...");
-                    
-                    attachmentUrl = await getDownloadURL(storageRef);
-                    console.log("URL fichier obtenue:", attachmentUrl);
+                    const { data: urlData } = supabase.storage.from('bank').getPublicUrl(filePath);
+                    attachmentUrl = urlData.publicUrl;
                 } catch (uploadErr: any) {
-                    console.error("Erreur Upload:", uploadErr);
-                    // On demande à l'utilisateur s'il veut continuer sans fichier
                     if (!window.confirm(`L'envoi du fichier a échoué : ${uploadErr.message}.\nVoulez-vous continuer l'enregistrement SANS la pièce jointe ?`)) {
                         setLoading(false);
-                        return; // On arrête tout si l'utilisateur dit Non
+                        return;
                     }
-                    // Sinon on continue avec attachmentUrl vide
                 }
             }
 
-            // 5. Enregistrement Firestore
-            console.log("Enregistrement dans Firestore...");
-            
-            // Timeout pour Firestore aussi (10s)
+            const transactionId = crypto.randomUUID();
+            const now = new Date();
             const docData = {
+                id: transactionId,
                 ...newTransaction,
+                date: newTransaction.date?.includes('T') ? newTransaction.date : `${newTransaction.date}T${now.toISOString().split('T')[1]}`,
                 amount: amountVal,
-                description: newTransaction.description.trim(),
+                description: newTransaction.description?.trim() || '',
                 reference: newTransaction.reference?.trim() || '',
                 category: newTransaction.category?.trim() || 'Autre',
                 attachmentUrl,
@@ -159,15 +144,9 @@ const BankPage: React.FC = () => {
                 createdAt: new Date().toISOString()
             };
 
-            const firestorePromise = addDoc(collection(db, 'bankTransactions'), docData);
-            const firestoreTimeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error("Délai d'attente dépassé pour la base de données (10s).")), 10000)
-            );
+            const { error: insError } = await supabase.from('bank_transactions').insert(docData);
+            if (insError) throw insError;
 
-            await Promise.race([firestorePromise, firestoreTimeoutPromise]);
-            console.log("Transaction enregistrée avec succès !");
-
-            // 6. Succès & Reset
             setIsTransactionModalOpen(false);
             setNewTransaction({
                 type: 'deposit',
@@ -180,7 +159,6 @@ const BankPage: React.FC = () => {
             setAttachmentFile(null);
             fetchData();
         } catch (err: any) {
-            console.error("Erreur Globale Transaction:", err);
             setError(`Échec de l'enregistrement : ${err.message || 'Erreur inconnue'}`);
         } finally {
             setLoading(false);
@@ -190,21 +168,26 @@ const BankPage: React.FC = () => {
     const handleUpdateSettings = async (e: React.FormEvent) => {
         e.preventDefault();
         try {
-            await updateDoc(doc(db, 'settings', 'app-config'), {
+            if (!settings?.id) throw new Error("Paramètres introuvables");
+            const { error: updError } = await supabase.from('app_settings').update({
                 bankOpeningBalance: parseFloat(openingBalanceForm.amount.toString()),
                 bankOpeningBalanceDate: openingBalanceForm.date
-            });
+            }).eq('id', settings.id);
+            
+            if (updError) throw updError;
+            
             setIsSettingsModalOpen(false);
             fetchData();
-        } catch (err) {
-            setError("Erreur lors de la mise à jour du solde d'ouverture.");
+        } catch (err: any) {
+            setError("Erreur lors de la mise à jour du solde d'ouverture: " + err.message);
         }
     };
 
     const handleDelete = async (id: string) => {
         if (window.confirm('Voulez-vous vraiment supprimer cette transaction ?')) {
             try {
-                await deleteDoc(doc(db, 'bankTransactions', id));
+                const { error: delError } = await supabase.from('bank_transactions').delete().eq('id', id);
+                if (delError) throw delError;
                 fetchData();
             } catch (err) {
                 setError("Erreur lors de la suppression.");
@@ -353,7 +336,7 @@ const BankPage: React.FC = () => {
                             {filteredTransactions.map((t) => (
                                 <tr key={t.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
                                     <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-600 dark:text-gray-300">
-                                        {new Date(t.date).toLocaleDateString('fr-FR')}
+                                        {formatDate(t.date)}
                                     </td>
                                     <td className="px-6 py-4 whitespace-nowrap">
                                         <span className={`px-2 py-1 rounded-lg text-[10px] font-black uppercase ${t.type === 'deposit' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>

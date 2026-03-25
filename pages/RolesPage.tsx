@@ -1,6 +1,5 @@
 import React, { useState, useEffect, FormEvent } from 'react';
-import { db } from '../firebase';
-import { collection, getDocs, doc, addDoc, updateDoc, deleteDoc, DocumentData, writeBatch } from 'firebase/firestore';
+import { supabase } from '../supabase';
 import { Role, Warehouse } from '../types';
 import { permissionConfig } from '../config/permissions';
 import Modal from '../components/Modal';
@@ -25,12 +24,13 @@ const RolesPage: React.FC = () => {
     const fetchData = async () => {
         setLoading(true);
         try {
-            const [rolesSnap, warehousesSnap] = await Promise.all([
-                getDocs(collection(db, "roles")),
-                getDocs(collection(db, "warehouses")),
+            const [rolesRes, warehousesRes] = await Promise.all([
+                supabase.from('roles').select('*'),
+                supabase.from('warehouses').select('*'),
             ]);
-            setRoles(rolesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Role)));
-            setWarehouses(warehousesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Warehouse)));
+            
+            setRoles((rolesRes.data || []) as Role[]);
+            setWarehouses((warehousesRes.data || []) as Warehouse[]);
         } catch (err) {
             setError("Impossible de charger les rôles.");
         } finally {
@@ -82,9 +82,12 @@ const RolesPage: React.FC = () => {
 
         try {
             if (isEditing) {
-                await updateDoc(doc(db, 'roles', id!), data as DocumentData);
+                if (!id) throw new Error("ID manquant");
+                const { error } = await supabase.from('roles').update(data).eq('id', id);
+                if (error) throw error;
             } else {
-                await addDoc(collection(db, "roles"), data);
+                const { error } = await supabase.from('roles').insert(data);
+                if (error) throw error;
             }
             await fetchData();
             closeModal();
@@ -96,7 +99,8 @@ const RolesPage: React.FC = () => {
     const handleDelete = async (id: string) => {
         if (window.confirm("Supprimer ce rôle ?")) {
             try {
-                await deleteDoc(doc(db, "roles", id));
+                const { error } = await supabase.from('roles').delete().eq('id', id);
+                if (error) throw error;
                 await fetchData();
             } catch (err) {
                 setError("Erreur de suppression.");
@@ -105,12 +109,15 @@ const RolesPage: React.FC = () => {
     };
 
     const handleBulkDelete = async () => {
-        const batch = writeBatch(db);
-        selectedIds.forEach(id => batch.delete(doc(db, 'roles', id)));
-        await batch.commit();
-        await fetchData();
-        setSelectedIds([]);
-        setIsBulkDeleteModalOpen(false);
+        try {
+            const { error } = await supabase.from('roles').delete().in('id', selectedIds);
+            if (error) throw error;
+            await fetchData();
+            setSelectedIds([]);
+            setIsBulkDeleteModalOpen(false);
+        } catch (err) {
+             setError("Erreur de suppression multiple.");
+        }
     };
 
     const handleSelectOne = (id: string) => {

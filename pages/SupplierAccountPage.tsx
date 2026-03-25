@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { db, storage } from '../firebase';
-import { doc, getDoc, collection, getDocs, query, where, runTransaction, DocumentData } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { supabase } from '../supabase';
 import { Supplier, Purchase, Payment, PaymentMethod, PaymentStatus, AppSettings, DeletedPurchasePayment } from '../types';
 import { ArrowLeftIcon, PrintIcon, TrendingUpIcon, WarningIcon, PaymentIcon, DeleteIcon, UploadIcon } from '../constants';
 import { useReactToPrint } from 'react-to-print';
@@ -50,6 +48,7 @@ interface AccountMovement {
     const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
     const [selectedPurchaseId, setSelectedPurchaseId] = useState<string>('');
     const [useCreditBalance, setUseCreditBalance] = useState(false);
+    const [selectAllPurchases, setSelectAllPurchases] = useState(false);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
@@ -61,9 +60,10 @@ interface AccountMovement {
 
     const fetchSettings = async () => {
         try {
-            const settingsSnap = await getDocs(collection(db, 'appSettings'));
-            if (!settingsSnap.empty) {
-                setSettings({ id: settingsSnap.docs[0].id, ...settingsSnap.docs[0].data() } as AppSettings);
+            const { data, error } = await supabase.from('app_settings').select('*').limit(1).single();
+            if (error) throw error;
+            if (data) {
+                setSettings(data as AppSettings);
             }
         } catch (error) {
             console.error("Erreur chargement paramètres:", error);
@@ -74,32 +74,28 @@ interface AccountMovement {
         if (!id) return;
         setLoading(true);
         try {
-            const supSnap = await getDoc(doc(db, 'suppliers', id));
-            if (!supSnap.exists()) { navigate('/suppliers'); return; }
-            const supplierData = { id: supSnap.id, ...supSnap.data() } as Supplier;
-            setSupplier(supplierData);
+            const { data: supplierData, error: supError } = await supabase.from('suppliers').select('*').eq('id', id).single();
+            if (supError || !supplierData) { navigate('/suppliers'); return; }
+            setSupplier(supplierData as Supplier);
 
-            const purchasesQuery = query(collection(db, "purchases"), where("supplierId", "==", id));
-            const purchasesSnap = await getDocs(purchasesQuery);
-            const purchasesDocs = purchasesSnap.docs.map(d => ({ id: d.id, ...d.data() } as Purchase));
+            const { data: purchasesDocs, error: purError } = await supabase.from('purchases').select('*').eq('supplierId', id);
+            if (purError) throw purError;
             
-            const purchaseIds = purchasesDocs.map(p => p.id);
-            let allPayments: Payment[] = [];
+            const purchaseIds = (purchasesDocs || []).map(p => p.id);
             const openingBalanceId = `OPENING_BALANCE_${id}`;
             const creditBalanceId = `CREDIT_BALANCE_${id}`;
 
-            // Récupérer tous les paiements liés (achats, solde ouverture, crédits)
-            const pSnap = await getDocs(collection(db, "purchasePayments"));
-            allPayments = pSnap.docs
-                .map(d => ({ id: d.id, ...d.data() } as Payment))
-                .filter(p => purchaseIds.includes(p.purchaseId) || p.purchaseId === openingBalanceId || p.purchaseId === creditBalanceId);
+            const { data: allPayments, error: payError } = await supabase.from('purchase_payments').select('*');
+            if (payError) throw payError;
+
+            const filteredPayments = (allPayments || []).filter(p => purchaseIds.includes(p.purchaseId) || p.purchaseId === openingBalanceId || p.purchaseId === creditBalanceId);
 
             const combined: AccountMovement[] = [];
             
             let currentOpeningBalanceRemaining = 0;
             // 1. Solde d'ouverture (Dette initiale)
             if (supplierData.openingBalance && supplierData.openingBalance > 0) {
-                const openingPayments = allPayments.filter(p => p.purchaseId === openingBalanceId);
+                const openingPayments = filteredPayments.filter(p => p.purchaseId === openingBalanceId);
                 const totalOpeningPaid = openingPayments.reduce((sum, p) => sum + p.amount, 0);
                 currentOpeningBalanceRemaining = supplierData.openingBalance - totalOpeningPaid;
 
@@ -129,7 +125,7 @@ interface AccountMovement {
             }
             setOpeningBalanceRemaining(currentOpeningBalanceRemaining);
             
-            purchasesDocs.forEach(p => {
+            purchasesDocs?.forEach(p => {
                 combined.push({
                     date: p.date,
                     ref: p.referenceNumber,
@@ -141,7 +137,7 @@ interface AccountMovement {
                     purchaseId: p.id
                 });
 
-                const paymentsForPurchase = allPayments.filter(pay => pay.purchaseId === p.id);
+                const paymentsForPurchase = filteredPayments.filter(pay => pay.purchaseId === p.id);
                 const sumPaymentsDocs = paymentsForPurchase.reduce((sum, pay) => sum + pay.amount, 0);
 
                 if (p.paidAmount > sumPaymentsDocs + 1) {
@@ -157,11 +153,11 @@ interface AccountMovement {
                 }
             });
 
-            allPayments.forEach(pay => {
-                if (pay.purchaseId.startsWith('OPENING_BALANCE_')) return;
+            filteredPayments.forEach(pay => {
+                if (pay.purchaseId?.startsWith('OPENING_BALANCE_')) return;
 
                 // 1. Creation of Credit (Return/Avoir) -> Always Include (Reduces Debt)
-                if (pay.purchaseId.startsWith('CREDIT_BALANCE_')) {
+                if (pay.purchaseId?.startsWith('CREDIT_BALANCE_')) {
                     combined.push({
                         date: pay.date,
                         ref: `AVOIR-${pay.id.slice(-4).toUpperCase()}`,
@@ -180,7 +176,7 @@ interface AccountMovement {
                 // The debt reduction already happened when the Credit (Return) was created.
                 if (pay.method === 'Compte Avoir') return;
 
-                const parentPurchase = purchasesDocs.find(p => p.id === pay.purchaseId);
+                const parentPurchase = purchasesDocs?.find(p => p.id === pay.purchaseId);
                 combined.push({
                     date: pay.date,
                     ref: `REG-${pay.id.slice(-4).toUpperCase()}`,
@@ -194,22 +190,31 @@ interface AccountMovement {
                 });
             });
 
-            combined.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+            combined.sort((a, b) => {
+                const dateDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
+                if (dateDiff !== 0) return dateDiff;
+                // En cas de même date, les achats (crédit) passent avant les règlements (débit)
+                // pour que le solde de la ligne achat soit correct avant son règlement.
+                if (a.credit !== b.credit) return b.credit - a.credit;
+                return 0;
+            });
 
             let runningBalance = 0;
             let tPurchased = 0;
             let tPaid = 0;
             const processed = combined.map(m => {
-                runningBalance += (m.credit - m.debit);
-                tPurchased += m.credit;
-                tPaid += m.debit;
-                return { ...m, balance: runningBalance };
+                const credit = Number(m.credit) || 0;
+                const debit = Number(m.debit) || 0;
+                runningBalance += (credit - debit);
+                tPurchased += credit;
+                tPaid += debit;
+                return { ...m, balance: runningBalance, credit, debit };
             });
 
             setMovements(processed);
             setSummary({ totalPurchased: tPurchased, totalPaid: tPaid, balance: runningBalance });
             
-            const unpaid = purchasesDocs.filter(p => p.paymentStatus !== 'Payé');
+            const unpaid = (purchasesDocs || []).filter(p => p.paymentStatus !== 'Payé');
             setUnpaidPurchases(unpaid.sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime()));
             
             if (currentOpeningBalanceRemaining > 0) {
@@ -231,7 +236,7 @@ interface AccountMovement {
     }, [id, navigate]);
 
     const handleDeletePayment = (m: AccountMovement) => {
-        if (!m.id || !m.purchaseId || m.type !== 'payment') return;
+        if (!m.paymentId || !m.purchaseId || m.type !== 'payment') return;
         // m.id corresponds to paymentId here because we mapped it in fetchAccountData
         // Need to ensure m.paymentId is set correctly
         if (!m.paymentId) return;
@@ -250,74 +255,59 @@ interface AccountMovement {
 
         setIsDeleting(true);
         try {
-            await runTransaction(db, async (transaction) => {
-                const { id: paymentId, purchaseId, amount } = paymentToDelete;
-                
-                // Get payment data first
-                const paymentRef = doc(db, "purchasePayments", paymentId);
-                const paymentSnap = await transaction.get(paymentRef);
-                if (!paymentSnap.exists()) throw new Error("Paiement introuvable");
-                const paymentData = paymentSnap.data() as Payment;
+            const { id: paymentId, purchaseId, amount } = paymentToDelete;
+            
+            const { data: paymentData, error: payError } = await supabase.from('purchase_payments').select('*').eq('id', paymentId).single();
+            if (payError || !paymentData) throw new Error("Paiement introuvable");
 
-                // Handle Credit Balance Impacts (Supplier Credit Balance)
-                const supplierRef = doc(db, "suppliers", id!);
-                const supplierSnap = await transaction.get(supplierRef);
-                
-                if (supplierSnap.exists()) {
-                    const supplierData = supplierSnap.data() as Supplier;
-                    let currentCredit = supplierData.creditBalance || 0;
-                    let creditChanged = false;
+            const { data: supplierData, error: supError } = await supabase.from('suppliers').select('*').eq('id', id).single();
+            if (supError || !supplierData) throw new Error("Fournisseur introuvable");
+            
+            let currentCredit = supplierData.creditBalance || 0;
+            let creditChanged = false;
 
-                    // CAS 1: Remboursement si payé par 'Compte Avoir'
-                    if (paymentData.method === 'Compte Avoir') {
-                        currentCredit += amount;
-                        creditChanged = true;
-                    }
+            if (paymentData.method === 'Compte Avoir') {
+                currentCredit += amount;
+                creditChanged = true;
+            }
 
-                    // CAS 2: Déduction si on supprime un Avoir (Surplus généré)
-                    if (purchaseId.startsWith('CREDIT_BALANCE_')) {
-                        if (currentCredit < amount) {
-                            throw new Error(`Impossible de supprimer cet avoir : une partie a déjà été utilisée (Solde: ${formatCurrency(currentCredit)}).`);
-                        }
-                        currentCredit -= amount;
-                        creditChanged = true;
-                    }
-
-                    if (creditChanged) {
-                        transaction.update(supplierRef, { creditBalance: currentCredit });
-                    }
+            if (purchaseId?.startsWith('CREDIT_BALANCE_')) {
+                if (currentCredit < amount) {
+                    throw new Error(`Impossible de supprimer cet avoir : une partie a déjà été utilisée (Solde: ${formatCurrency(currentCredit)}).`);
                 }
+                currentCredit -= amount;
+                creditChanged = true;
+            }
 
-                if (purchaseId.startsWith('OPENING_BALANCE_') || purchaseId.startsWith('CREDIT_BALANCE_')) {
-                    // Nothing to update on a purchase document
-                } else {
-                    const purchaseRef = doc(db, "purchases", purchaseId);
-                    const purchaseSnap = await transaction.get(purchaseRef);
-                    if (purchaseSnap.exists()) {
-                        const purchaseData = purchaseSnap.data() as Purchase;
-                        const newPaid = Math.max(0, (purchaseData.paidAmount || 0) - amount);
-                        
-                        let newStatus: PaymentStatus = 'En attente';
-                        if (newPaid >= purchaseData.grandTotal - 0.1) newStatus = 'Payé';
-                        else if (newPaid > 0.1) newStatus = 'Partiel';
-                        
-                        transaction.update(purchaseRef, { paidAmount: newPaid, paymentStatus: newStatus });
-                    }
+            if (creditChanged) {
+                const { error: updSupError } = await supabase.from('suppliers').update({ creditBalance: currentCredit }).eq('id', id);
+                if (updSupError) throw updSupError;
+            }
+
+            if (purchaseId && !purchaseId.startsWith('OPENING_BALANCE_') && !purchaseId.startsWith('CREDIT_BALANCE_')) {
+                const { data: purchaseData, error: purError } = await supabase.from('purchases').select('*').eq('id', purchaseId).single();
+                if (!purError && purchaseData) {
+                    const newPaid = Math.max(0, (purchaseData.paidAmount || 0) - amount);
+                    let newStatus: PaymentStatus = 'En attente';
+                    if (newPaid >= purchaseData.grandTotal - 0.1) newStatus = 'Payé';
+                    else if (newPaid > 0.1) newStatus = 'Partiel';
+                    
+                    const { error: updPurError } = await supabase.from('purchases').update({ paidAmount: newPaid, paymentStatus: newStatus }).eq('id', purchaseId);
+                    if (updPurError) throw updPurError;
                 }
+            }
 
-                // Store audit trail
-                const deletedPaymentRef = doc(collection(db, "deleted_purchasePayments"));
-                const deletedPaymentData: DeletedPurchasePayment = {
-                    originalPayment: paymentData,
-                    deletedAt: new Date().toISOString(),
-                    deletedBy: user.uid,
-                    deleteReason: deleteReason
-                };
-                transaction.set(deletedPaymentRef, deletedPaymentData);
+            const deletedPaymentData = {
+                originalPayment: paymentData,
+                deletedAt: new Date().toISOString(),
+                deletedBy: user.uid,
+                deleteReason: deleteReason
+            };
+            const { error: delLogError } = await supabase.from('deleted_purchase_payments').insert(deletedPaymentData);
+            if (delLogError) throw delLogError;
 
-                // Delete original payment
-                transaction.delete(paymentRef);
-            });
+            const { error: delError } = await supabase.from('purchase_payments').delete().eq('id', paymentId);
+            if (delError) throw delError;
 
             await fetchAccountData();
             setDeleteModalOpen(false);
@@ -332,7 +322,7 @@ interface AccountMovement {
 
     const handleQuickPayment = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!user || paymentAmount <= 0 || !selectedPurchaseId) return;
+        if (!user || paymentAmount <= 0) return;
 
         if (paymentMethod === 'Mobile Money' && (!momoOperator || !momoNumber)) {
             setError("Opérateur et numéro requis pour Mobile Money.");
@@ -342,10 +332,8 @@ interface AccountMovement {
         setIsSubmitting(true);
         setError(null);
         try {
-            // 1. Préparer la liste de toutes les dettes
             const allDebts: { id: string, type: 'purchase' | 'opening', remaining: number, date: string, refNumber?: string }[] = [];
 
-            // A. Solde d'ouverture
             if (openingBalanceRemaining > 0.1) {
                 allDebts.push({
                     id: `OPENING_BALANCE_${id}`,
@@ -356,7 +344,6 @@ interface AccountMovement {
                 });
             }
 
-            // B. Achats impayés
             unpaidPurchases.forEach(p => {
                 const rem = p.grandTotal - p.paidAmount;
                 if (rem > 0.1) {
@@ -370,14 +357,12 @@ interface AccountMovement {
                 }
             });
 
-            // 2. Ordonner les dettes
             allDebts.sort((a, b) => {
                 if (a.id === selectedPurchaseId) return -1;
                 if (b.id === selectedPurchaseId) return 1;
                 return new Date(a.date).getTime() - new Date(b.date).getTime();
             });
 
-            // 3. Vérifier total
             const totalDebt = allDebts.reduce((sum, d) => sum + d.remaining, 0);
             if (paymentAmount > totalDebt + 10) {
                 if (!window.confirm(`Le montant saisi (${formatCurrency(paymentAmount)}) est supérieur à la dette totale (${formatCurrency(totalDebt)}). Voulez-vous continuer et créer un avoir pour le surplus ?`)) {
@@ -386,163 +371,124 @@ interface AccountMovement {
                 }
             }
 
-            // Upload attachment if present
             let attachmentUrl: string | undefined;
             if (attachmentFile) {
-                const storageRef = ref(storage, `purchase_payments/${selectedPurchaseId}/${Date.now()}_${attachmentFile.name}`);
-                await uploadBytes(storageRef, attachmentFile);
-                attachmentUrl = await getDownloadURL(storageRef);
+                const filePath = `purchase_payments/${selectedPurchaseId}/${Date.now()}_${attachmentFile.name}`;
+                const { error: uploadError } = await supabase.storage.from('purchases').upload(filePath, attachmentFile);
+                if (uploadError) throw uploadError;
+                const { data: urlData } = supabase.storage.from('purchases').getPublicUrl(filePath);
+                attachmentUrl = urlData.publicUrl;
             }
 
-            // 4. Transaction
-            await runTransaction(db, async (transaction) => {
-                // Lecture du fournisseur pour crédit
-                const supplierRef = doc(db, 'suppliers', id!);
-                const supplierSnap = await transaction.get(supplierRef);
-                if (!supplierSnap.exists()) throw new Error("Fournisseur introuvable");
-                const supplierData = supplierSnap.data() as Supplier;
-                let currentCreditBalance = supplierData.creditBalance || 0;
+            const { data: supplierData, error: supError } = await supabase.from('suppliers').select('*').eq('id', id).single();
+            if (supError || !supplierData) throw new Error("Fournisseur introuvable");
+            
+            let currentCreditBalance = supplierData.creditBalance || 0;
+            let creditPart = 0;
+            let cashPart = paymentAmount;
 
-                let creditPart = 0;
-                let cashPart = paymentAmount;
+            if (paymentMethod === 'Compte Avoir') {
+                if (paymentAmount > currentCreditBalance) {
+                    throw new Error(`Solde Avoir insuffisant (Disponible: ${formatCurrency(currentCreditBalance)})`);
+                }
+                creditPart = paymentAmount;
+                cashPart = 0;
+                currentCreditBalance -= creditPart;
+            } else if (useCreditBalance && currentCreditBalance > 0) {
+                creditPart = Math.min(paymentAmount, currentCreditBalance);
+                cashPart = paymentAmount - creditPart;
+                currentCreditBalance -= creditPart;
+            }
 
-                // Calcul de la part Crédit vs Cash
-                if (paymentMethod === 'Compte Avoir') {
-                    // Si on force "Compte Avoir", tout vient du crédit
-                    if (paymentAmount > currentCreditBalance) {
-                        throw new Error(`Solde Avoir insuffisant (Disponible: ${formatCurrency(currentCreditBalance)})`);
-                    }
-                    creditPart = paymentAmount;
-                    cashPart = 0;
-                    currentCreditBalance -= creditPart;
-                } else if (useCreditBalance && currentCreditBalance > 0) {
-                    // Si on coche "Utiliser l'avoir" avec un autre mode (Mixte)
-                    creditPart = Math.min(paymentAmount, currentCreditBalance);
-                    cashPart = paymentAmount - creditPart;
-                    currentCreditBalance -= creditPart;
+            let remainingCredit = creditPart;
+            let remainingCash = cashPart;
+
+            const paymentsToCreate: any[] = [];
+
+            for (const debt of allDebts) {
+                if (remainingCredit <= 0.01 && remainingCash <= 0.01) break;
+
+                let currentDue = 0;
+                let purchaseData: Purchase | null = null;
+
+                if (debt.type === 'purchase') {
+                    const { data: purData } = await supabase.from('purchases').select('*').eq('id', debt.id).single();
+                    if (!purData) continue;
+                    purchaseData = purData as Purchase;
+                    currentDue = purchaseData.grandTotal - purchaseData.paidAmount;
+                } else {
+                    currentDue = debt.remaining;
                 }
 
-                let remainingCredit = creditPart;
-                let remainingCash = cashPart;
-
-                const updatesToPerform: { ref: any, data: any }[] = [];
-                const paymentsToCreate: any[] = [];
-
-                for (const debt of allDebts) {
-                    if (remainingCredit <= 0.01 && remainingCash <= 0.01) break;
-
-                    let currentDue = 0;
-                    let purchaseRef = null;
-                    let purchaseData = null;
-
-                    if (debt.type === 'purchase') {
-                        purchaseRef = doc(db, 'purchases', debt.id);
-                        const purchaseSnap = await transaction.get(purchaseRef);
-                        if (!purchaseSnap.exists()) continue;
-                        purchaseData = purchaseSnap.data() as Purchase;
-                        currentDue = purchaseData.grandTotal - purchaseData.paidAmount;
-                    } else {
-                        currentDue = debt.remaining;
-                    }
-
-                    // A. Paiement via Crédit
-                    if (remainingCredit > 0.01 && currentDue > 0.01) {
-                        const payAmount = Math.min(remainingCredit, currentDue);
-                        
-                        paymentsToCreate.push({
-                            purchaseId: debt.id,
-                            date: new Date().toISOString(),
-                            amount: payAmount,
-                            method: 'Compte Avoir',
-                            createdByUserId: user.uid,
-                            notes: (paymentNotes ? paymentNotes + ' ' : '') + `(Via Avoir)` + (allDebts.length > 1 && debt.id !== selectedPurchaseId ? ` (Reliquat)` : ''),
-                            attachmentUrl: attachmentUrl
-                        });
-
-                        currentDue -= payAmount;
-                        remainingCredit -= payAmount;
-
-                        if (debt.type === 'purchase' && purchaseRef && purchaseData) {
-                            const newPaid = (purchaseData.paidAmount || 0) + payAmount;
-                            purchaseData.paidAmount = newPaid;
-                        }
-                    }
-
-                    // B. Paiement via Cash (Reste)
-                    if (remainingCash > 0.01 && currentDue > 0.01) {
-                        const payAmount = Math.min(remainingCash, currentDue);
-
-                        const pData: any = {
-                            purchaseId: debt.id,
-                            date: new Date().toISOString(),
-                            amount: payAmount,
-                            method: paymentMethod,
-                            createdByUserId: user.uid,
-                            notes: paymentNotes + (allDebts.length > 1 && debt.id !== selectedPurchaseId ? ` (Reliquat)` : ''),
-                            attachmentUrl: attachmentUrl
-                        };
-                        if (paymentMethod === 'Mobile Money') {
-                            pData.momoOperator = momoOperator;
-                            pData.momoNumber = momoNumber;
-                        }
-
-                        paymentsToCreate.push(pData);
-
-                        currentDue -= payAmount;
-                        remainingCash -= payAmount;
-
-                        if (debt.type === 'purchase' && purchaseRef && purchaseData) {
-                            purchaseData.paidAmount = (purchaseData.paidAmount || 0) + payAmount;
-                        }
-                    }
-
-                    // Finalisation Update Purchase
-                    if (debt.type === 'purchase' && purchaseRef && purchaseData) {
-                        const finalPaid = purchaseData.paidAmount;
-                        const newStatus = (purchaseData.grandTotal - finalPaid) <= 0.1 ? 'Payé' : 'Partiel';
-                        
-                        updatesToPerform.push({
-                            ref: purchaseRef,
-                            data: { paidAmount: finalPaid, paymentStatus: newStatus }
-                        });
-                    }
-                }
-
-                // Surplus -> Crédit
-                if (remainingCash > 0.1) {
-                    const creditPayment: any = {
-                        purchaseId: `CREDIT_BALANCE_${id}`,
+                if (remainingCredit > 0.01 && currentDue > 0.01) {
+                    const payAmount = Math.min(remainingCredit, currentDue);
+                    paymentsToCreate.push({
+                        purchaseId: debt.id,
                         date: new Date().toISOString(),
-                        amount: remainingCash,
+                        amount: payAmount,
+                        method: 'Compte Avoir',
+                        createdByUserId: user.uid,
+                        notes: (paymentNotes ? paymentNotes + ' ' : '') + `(Via Avoir)` + (allDebts.length > 1 && debt.id !== selectedPurchaseId ? ` (Reliquat)` : ''),
+                        attachmentUrl: attachmentUrl
+                    });
+                    currentDue -= payAmount;
+                    remainingCredit -= payAmount;
+                    if (debt.type === 'purchase' && purchaseData) purchaseData.paidAmount += payAmount;
+                }
+
+                if (remainingCash > 0.01 && currentDue > 0.01) {
+                    const payAmount = Math.min(remainingCash, currentDue);
+                    const pData: any = {
+                        purchaseId: debt.id,
+                        date: new Date().toISOString(),
+                        amount: payAmount,
                         method: paymentMethod,
                         createdByUserId: user.uid,
-                        notes: (paymentNotes || 'Avoir généré suite surplus') + ` (Surplus)`,
+                        notes: paymentNotes + (allDebts.length > 1 && debt.id !== selectedPurchaseId ? ` (Reliquat)` : ''),
                         attachmentUrl: attachmentUrl
                     };
                     if (paymentMethod === 'Mobile Money') {
-                        creditPayment.momoOperator = momoOperator;
-                        creditPayment.momoNumber = momoNumber;
+                        pData.momoOperator = momoOperator;
+                        pData.momoNumber = momoNumber;
                     }
-                    paymentsToCreate.push(creditPayment);
-                    
-                    currentCreditBalance += remainingCash;
+                    paymentsToCreate.push(pData);
+                    currentDue -= payAmount;
+                    remainingCash -= payAmount;
+                    if (debt.type === 'purchase' && purchaseData) purchaseData.paidAmount += payAmount;
                 }
 
-                // Writes
-                if (currentCreditBalance !== (supplierData.creditBalance || 0)) {
-                    transaction.update(supplierRef, { creditBalance: currentCreditBalance });
+                if (debt.type === 'purchase' && purchaseData) {
+                    const finalPaid = purchaseData.paidAmount;
+                    const newStatus = (purchaseData.grandTotal - finalPaid) <= 0.1 ? 'Payé' : 'Partiel';
+                    await supabase.from('purchases').update({ paidAmount: finalPaid, paymentStatus: newStatus }).eq('id', debt.id);
                 }
+            }
 
-                paymentsToCreate.forEach(p => {
-                    const newRef = doc(collection(db, "purchasePayments"));
-                    p.id = newRef.id; 
-                    transaction.set(newRef, p);
-                });
+            if (remainingCash > 0.1) {
+                const creditPayment: any = {
+                    purchaseId: `CREDIT_BALANCE_${id}`,
+                    date: new Date().toISOString(),
+                    amount: remainingCash,
+                    method: paymentMethod,
+                    createdByUserId: user.uid,
+                    notes: (paymentNotes || 'Avoir généré suite surplus') + ` (Surplus)`,
+                    attachmentUrl: attachmentUrl
+                };
+                if (paymentMethod === 'Mobile Money') {
+                    creditPayment.momoOperator = momoOperator;
+                    creditPayment.momoNumber = momoNumber;
+                }
+                paymentsToCreate.push(creditPayment);
+                currentCreditBalance += remainingCash;
+            }
 
-                updatesToPerform.forEach(u => {
-                    transaction.update(u.ref, u.data);
-                });
-            });
+            if (currentCreditBalance !== (supplierData.creditBalance || 0)) {
+                await supabase.from('suppliers').update({ creditBalance: currentCreditBalance }).eq('id', id);
+            }
+
+            if (paymentsToCreate.length > 0) {
+                await supabase.from('purchase_payments').insert(paymentsToCreate);
+            }
 
             setIsPaymentModalOpen(false);
             setPaymentAmount(0);
@@ -659,7 +605,7 @@ interface AccountMovement {
                 </div>
             </div>
 
-            <Modal isOpen={isPaymentModalOpen} onClose={() => setIsPaymentModalOpen(false)} title="Payer le fournisseur">
+            <Modal isOpen={isPaymentModalOpen} onClose={() => { setIsPaymentModalOpen(false); setSelectAllPurchases(false); setPaymentAmount(0); }} title="Payer le fournisseur">
                 <form onSubmit={handleQuickPayment} className="p-6 space-y-4">
                     {error && <div className="p-3 bg-red-100 text-red-700 rounded-xl text-xs font-bold">{error}</div>}
                     
@@ -672,21 +618,93 @@ interface AccountMovement {
                     )}
 
                     <div>
-                        <label className="block text-xs font-black uppercase text-gray-400 mb-1">Dette à régler</label>
-                        <select 
-                            value={selectedPurchaseId} 
-                            onChange={(e) => setSelectedPurchaseId(e.target.value)}
-                            required
-                            className="w-full p-3 border rounded-xl dark:bg-gray-700 font-bold"
-                        >
+                        <div className="flex items-center justify-between mb-2">
+                            <label className="block text-[10px] font-black uppercase text-gray-400">Dettes à régler</label>
+                            <label className="flex items-center gap-2 cursor-pointer text-xs font-black text-primary-600 hover:text-primary-700 transition-colors select-none">
+                                <input
+                                    type="checkbox"
+                                    checked={selectAllPurchases}
+                                    onChange={(e) => {
+                                        setSelectAllPurchases(e.target.checked);
+                                        if (e.target.checked) {
+                                            setSelectedPurchaseId('');
+                                            const total = (openingBalanceRemaining > 0 ? openingBalanceRemaining : 0)
+                                                + unpaidPurchases.reduce((sum, p) => sum + (p.grandTotal - p.paidAmount), 0);
+                                            setPaymentAmount(Math.round(total));
+                                        } else {
+                                            setPaymentAmount(0);
+                                        }
+                                    }}
+                                    className="w-4 h-4 text-primary-600 rounded focus:ring-primary-500 border-gray-300 cursor-pointer"
+                                />
+                                <span>✅ Tout sélectionner ({formatCurrency(
+                                    (openingBalanceRemaining > 0 ? openingBalanceRemaining : 0)
+                                    + unpaidPurchases.reduce((sum, p) => sum + (p.grandTotal - p.paidAmount), 0)
+                                )})</span>
+                            </label>
+                        </div>
+
+                        <div className="space-y-2 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
                             {openingBalanceRemaining > 0 && (
-                                <option value={`OPENING_BALANCE_${id}`}>SOLDE D'OUVERTURE - Reste: {formatCurrency(openingBalanceRemaining)}</option>
+                                <label className={`flex items-center justify-between p-3 rounded-xl border-2 cursor-pointer transition-all select-none ${
+                                    selectAllPurchases || selectedPurchaseId === `OPENING_BALANCE_${id}`
+                                        ? 'border-orange-400 bg-orange-50 dark:bg-orange-900/20'
+                                        : 'border-gray-200 dark:border-gray-700 hover:border-orange-300'
+                                }`}>
+                                    <div className="flex items-center gap-3">
+                                        <input
+                                            type="checkbox"
+                                            checked={selectAllPurchases || selectedPurchaseId === `OPENING_BALANCE_${id}`}
+                                            onChange={(e) => {
+                                                if (selectAllPurchases) return;
+                                                setSelectedPurchaseId(e.target.checked ? `OPENING_BALANCE_${id}` : '');
+                                                if (e.target.checked) setPaymentAmount(Math.round(openingBalanceRemaining));
+                                            }}
+                                            className="w-4 h-4 text-orange-500 rounded focus:ring-orange-400 border-gray-300 cursor-pointer"
+                                        />
+                                        <div>
+                                            <p className="text-xs font-black uppercase text-orange-700 dark:text-orange-400">Solde d'ouverture</p>
+                                            <p className="text-[10px] text-gray-400">Dette initiale</p>
+                                        </div>
+                                    </div>
+                                    <span className="text-sm font-black text-orange-600">{formatCurrency(openingBalanceRemaining)}</span>
+                                </label>
                             )}
-                            {unpaidPurchases.map(p => (
-                                <option key={p.id} value={p.id}>{p.referenceNumber} - Reste: {formatCurrency(p.grandTotal - p.paidAmount)}</option>
-                            ))}
-                            {unpaidPurchases.length === 0 && openingBalanceRemaining <= 0 && <option disabled>Aucune dette impayée</option>}
-                        </select>
+
+                            {unpaidPurchases.map(p => {
+                                const remaining = p.grandTotal - p.paidAmount;
+                                const isChecked = selectAllPurchases || selectedPurchaseId === p.id;
+                                return (
+                                    <label key={p.id} className={`flex items-center justify-between p-3 rounded-xl border-2 cursor-pointer transition-all select-none ${
+                                        isChecked
+                                            ? 'border-red-400 bg-red-50 dark:bg-red-900/20'
+                                            : 'border-gray-200 dark:border-gray-700 hover:border-red-300'
+                                    }`}>
+                                        <div className="flex items-center gap-3">
+                                            <input
+                                                type="checkbox"
+                                                checked={isChecked}
+                                                onChange={(e) => {
+                                                    if (selectAllPurchases) return;
+                                                    setSelectedPurchaseId(e.target.checked ? p.id : '');
+                                                    if (e.target.checked) setPaymentAmount(Math.round(remaining));
+                                                }}
+                                                className="w-4 h-4 text-red-600 rounded focus:ring-red-500 border-gray-300 cursor-pointer"
+                                            />
+                                            <div>
+                                                <p className="text-xs font-black uppercase">{p.referenceNumber}</p>
+                                                <p className="text-[10px] text-gray-400">{new Date(p.date).toLocaleDateString('fr-FR')}</p>
+                                            </div>
+                                        </div>
+                                        <span className="text-sm font-black text-red-600">{formatCurrency(remaining)}</span>
+                                    </label>
+                                );
+                            })}
+
+                            {openingBalanceRemaining <= 0 && unpaidPurchases.length === 0 && (
+                                <p className="text-center text-sm text-gray-400 py-4">Aucune dette impayée.</p>
+                            )}
+                        </div>
                     </div>
                     <div>
                         <label className="block text-xs font-black uppercase text-gray-400 mb-1">Montant du versement</label>

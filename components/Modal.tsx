@@ -11,8 +11,15 @@ interface ModalProps {
 const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children, maxWidth = 'max-w-lg' }) => {
   const modalRef = useRef<HTMLDivElement>(null);
 
+  // Note: We deliberately do NOT render null when !isOpen if we want to support multiple modals or keep state.
+  // But standard modal behavior is to unmount content.
+  // The issue with sharing receipt might be related to how multiple modals interact.
+  // However, this component DOES return null if !isOpen.
+
   useEffect(() => {
     const keyHandler = (e: KeyboardEvent) => {
+      // Only close if this is the top-most modal
+      // This logic is simplified; a robust stack manager would be better
       if (e.key === 'Escape') onClose();
     };
     const clickHandler = (e: MouseEvent) => {

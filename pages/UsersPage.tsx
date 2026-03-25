@@ -1,17 +1,18 @@
 import React, { useState, useEffect, FormEvent } from 'react';
-import { db } from '../firebase';
-import { collection, getDocs, doc, addDoc, updateDoc, deleteDoc, DocumentData, writeBatch } from 'firebase/firestore';
-import { User, Role, Warehouse } from '../types';
+import { supabase } from '../supabase';
+import { User, Role } from '../types';
 import Modal from '../components/Modal';
 import { PlusIcon, EditIcon, DeleteIcon } from '../constants';
 import DropdownMenu, { DropdownMenuItem } from '../components/DropdownMenu';
 import { useAuth } from '../hooks/useAuth';
+import { useData } from '../context/DataContext';
 
 const UsersPage: React.FC = () => {
     const { hasPermission } = useAuth();
+    const { warehouses } = useData();
     const [users, setUsers] = useState<User[]>([]);
     const [roles, setRoles] = useState<Role[]>([]);
-    const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+    // const [warehouses, setWarehouses] = useState<Warehouse[]>([]); // Uses context now
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
@@ -30,14 +31,15 @@ const UsersPage: React.FC = () => {
         setLoading(true);
         setError(null);
         try {
-            const [usersSnap, rolesSnap, warehousesSnap] = await Promise.all([
-                getDocs(collection(db, "users")),
-                getDocs(collection(db, "roles")),
-                getDocs(collection(db, "warehouses")),
+            const [usersRes, rolesRes] = await Promise.all([
+                supabase.from('users').select('*'),
+                supabase.from('roles').select('*')
             ]);
-            setUsers(usersSnap.docs.map(doc => ({ uid: doc.id, ...doc.data() } as User)));
-            setRoles(rolesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Role)));
-            setWarehouses(warehousesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Warehouse)));
+
+            // Map Supabase results - Ensure UID is mapped if necessary
+            setUsers((usersRes.data || []).map(u => ({ ...u, uid: u.id } as User)));
+            setRoles((rolesRes.data || []) as Role[]);
+            
         } catch (err) {
             setError("Impossible de charger les données.");
             console.error(err);
@@ -98,17 +100,21 @@ const UsersPage: React.FC = () => {
         try {
             if (isEditing) {
                 const { uid, ...dataToUpdate } = userData;
-                await updateDoc(doc(db, 'users', uid!), dataToUpdate as DocumentData);
+                if (!uid) throw new Error("ID utilisateur manquant");
+                const { error } = await supabase.from('users').update(dataToUpdate).eq('id', uid);
+                if (error) throw error;
             } else {
                 if (!password) {
                     setError("Le mot de passe est obligatoire pour un nouvel utilisateur.");
                     return;
                 }
-                await addDoc(collection(db, "users"), userData);
+                const newId = crypto.randomUUID();
+                const { error } = await supabase.from('users').insert({ ...userData, id: newId });
+                if (error) throw error;
             }
             await fetchData();
             closeModal();
-        } catch (err) {
+        } catch (err: any) {
             setError("Erreur lors de l'enregistrement de l'utilisateur.");
             console.error(err);
         }
@@ -117,23 +123,27 @@ const UsersPage: React.FC = () => {
     const handleDeleteUser = async (userId: string) => {
         if (window.confirm("Êtes-vous sûr de vouloir supprimer cet utilisateur ?")) {
             try {
-                await deleteDoc(doc(db, "users", userId));
+                const { error } = await supabase.from('users').delete().eq('id', userId);
+                if (error) throw error;
                 await fetchData();
-            } catch (err) {
+            } catch (err: any) {
                 setError("Erreur lors de la suppression.");
+                console.error(err);
             }
         }
     };
     
     const handleBulkDelete = async () => {
-        const batch = writeBatch(db);
-        selectedIds.forEach(id => {
-            batch.delete(doc(db, "users", id));
-        });
-        await batch.commit();
-        await fetchData();
-        setSelectedIds([]);
-        setIsBulkDeleteModalOpen(false);
+        try {
+            const { error } = await supabase.from('users').delete().in('id', selectedIds);
+            if (error) throw error;
+            await fetchData();
+            setSelectedIds([]);
+            setIsBulkDeleteModalOpen(false);
+        } catch (err: any) {
+            console.error(err);
+            setError("Erreur lors de la suppression en masse.");
+        }
     };
 
     const handleSelectOne = (id: string) => {

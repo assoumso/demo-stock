@@ -1,26 +1,25 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { db } from '../firebase';
-import { collection, getDocs } from 'firebase/firestore';
-import { Sale, Product, Warehouse, Customer, SalePayment } from '../types';
+import { supabase } from '../supabase';
+import { Sale, Product, Warehouse, Customer, SalePayment, Expense, BankTransaction } from '../types';
 import { useAuth } from '../hooks/useAuth';
 import { useReactToPrint } from 'react-to-print';
-import { ShoppingCartIcon, TrendingUpIcon, WarningIcon, ChartBarIcon, SparklesIcon, DownloadIcon, CashIcon, PrintIcon } from '../constants';
-import { formatCurrency } from '../utils/formatters';
+import { ShoppingCartIcon, TrendingUpIcon, WarningIcon, ChartBarIcon, SparklesIcon, DownloadIcon, CashIcon, PrintIcon, DocumentTextIcon } from '../constants';
+import { formatCurrency, formatDate } from '../utils/formatters';
+import { useData } from '../context/DataContext';
 
-type ReportType = 'sales' | 'profit' | 'stock_alert' | 'inventory_value' | 'services' | 'cash';
+type ReportType = 'sales' | 'profit' | 'stock_alert' | 'inventory_value' | 'services' | 'cash' | 'financial';
 
 const thirtyDaysAgo = new Date();
 thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
 const ReportsPage: React.FC = () => {
     const { user, hasPermission } = useAuth();
+    const { products, warehouses, customers, expenses, expenseCategories, loading: dataLoading } = useData();
     const [activeReport, setActiveReport] = useState<ReportType>('sales');
     
     const [sales, setSales] = useState<Sale[]>([]);
-    const [products, setProducts] = useState<Product[]>([]);
-    const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
-    const [customers, setCustomers] = useState<Customer[]>([]);
     const [payments, setPayments] = useState<SalePayment[]>([]);
+    const [bankTransactions, setBankTransactions] = useState<BankTransaction[]>([]);
 
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -100,6 +99,7 @@ const ReportsPage: React.FC = () => {
     useEffect(() => {
         const orderedReports: ReportType[] = [];
         if (isAdmin && hasPermission('reports:profit')) orderedReports.push('profit');
+        if (hasPermission('reports:profit')) orderedReports.push('financial');
         if (hasPermission('reports:sales')) orderedReports.push('sales');
         if (hasPermission('reports:sales')) orderedReports.push('cash');
         if (hasPermission('reports:services')) orderedReports.push('services');
@@ -117,21 +117,38 @@ const ReportsPage: React.FC = () => {
             setLoading(true);
             setError(null);
             try {
-                const [salesSnap, productsSnap, warehousesSnap, customersSnap, paymentsSnap] = await Promise.all([
-                    getDocs(collection(db, 'sales')),
-                    getDocs(collection(db, 'products')),
-                    getDocs(collection(db, 'warehouses')),
-                    getDocs(collection(db, 'customers')),
-                    getDocs(collection(db, 'salePayments')),
+                console.log('📊 Chargement des données de rapports...');
+                
+                const [salesRes, paymentsRes, bankRes] = await Promise.all([
+                    supabase.from('sales').select('*'),
+                    supabase.from('sale_payments').select('*'),
+                    supabase.from('bank_transactions').select('*')
                 ]);
-                setSales(salesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Sale)));
-                setProducts(productsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product)));
-                setWarehouses(warehousesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Warehouse)));
-                setCustomers(customersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Customer)));
-                setPayments(paymentsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as SalePayment)));
-            } catch (err) {
-                console.error("Error fetching report data:", err);
-                setError("Impossible de charger les données pour les rapports.");
+
+                if (salesRes.error) throw salesRes.error;
+                if (paymentsRes.error) throw paymentsRes.error;
+                
+                // Bank transactions are optional/secondary, if it fails we continue
+                if (bankRes.error) {
+                    console.warn('⚠️ Bank transactions error:', bankRes.error.message);
+                }
+
+                const salesData = (salesRes.data || []) as Sale[];
+                const paymentsData = (paymentsRes.data || []) as SalePayment[];
+                const bankData = (bankRes.data || []) as BankTransaction[];
+
+                setSales(salesData);
+                setPayments(paymentsData);
+                setBankTransactions(bankData);
+                console.log('✅ Données de rapports chargées avec succès');
+            } catch (err: any) {
+                console.error("❌ Error fetching report data:", err);
+                const errorMsg = err.message || "Impossible de charger les données pour les rapports.";
+                setError(errorMsg);
+                
+                setSales([]);
+                setPayments([]);
+                setBankTransactions([]);
             } finally {
                 setLoading(false);
             }
@@ -150,8 +167,6 @@ const ReportsPage: React.FC = () => {
     const handleFilterChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
         setFilters(prev => ({ ...prev, [e.target.name]: e.target.value }));
     };
-
-    const formatDate = (dateString: string) => new Date(dateString).toLocaleDateString('fr-FR');
 
     const userVisibleSales = useMemo(() => {
         if (!user) return [];
@@ -276,6 +291,91 @@ const ReportsPage: React.FC = () => {
         };
     }, [filteredSales, products]);
 
+    const financialReportData = useMemo(() => {
+        console.log('📊 Calcul du rapport financier');
+        console.log('  - Ventes filtrées:', filteredSales.length);
+        console.log('  - Dépenses:', expenses.length);
+        console.log('  - Catégories de dépenses:', expenseCategories.length);
+        
+        // 1. Revenue (Sales)
+        const totalRevenue = filteredSales.reduce((sum, sale) => sum + sale.grandTotal, 0);
+        
+        // 2. COGS (Cost of Goods Sold)
+        let totalCOGS = 0;
+        filteredSales.forEach(sale => {
+            if (sale.items && Array.isArray(sale.items)) {
+                sale.items.forEach(item => {
+                    const product = products.find(p => p.id === item.productId);
+                    if (product) {
+                        const cost = Number(product.cost) || 0;
+                        const quantity = Number(item.quantity) || 0;
+                        totalCOGS += cost * quantity;
+                    }
+                });
+            }
+        });
+        
+        const grossProfit = totalRevenue - totalCOGS;
+
+        // 3. Operating Expenses (Dépenses)
+        const start = new Date(filters.startDate);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(filters.endDate);
+        end.setHours(23, 59, 59, 999);
+
+        const relevantExpenses = expenses.filter(e => {
+            const eDate = new Date(e.date);
+            return eDate >= start && eDate <= end;
+        });
+        
+        console.log('  - Dépenses pertinentes:', relevantExpenses.length);
+        
+        const totalOperatingExpenses = relevantExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
+
+        const expensesByCategory: Record<string, number> = {};
+        relevantExpenses.forEach(e => {
+            const cat = expenseCategories.find(c => c.id === e.categoryId);
+            const catName = cat ? cat.name : 'Non catégorisé';
+            expensesByCategory[catName] = (expensesByCategory[catName] || 0) + Number(e.amount || 0);
+        });
+
+        const operatingProfit = grossProfit - totalOperatingExpenses;
+
+        // 4. Other Income/Charges (Bank)
+        const relevantBankTransactions = bankTransactions.filter(t => {
+            const tDate = new Date(t.date);
+            return tDate >= start && tDate <= end;
+        });
+        
+        const otherIncome = relevantBankTransactions
+            .filter(t => t.type === 'deposit')
+            .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+            
+        const otherExpenses = relevantBankTransactions
+            .filter(t => t.type === 'withdrawal')
+            .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+
+        console.log('✅ Rapport financier calculé');
+        
+        return {
+            totalRevenue,
+            totalCOGS,
+            grossProfit,
+            totalOperatingExpenses,
+            operatingProfit,
+            relevantExpenses,
+            otherIncome,
+            otherExpenses,
+            relevantBankTransactions,
+            expensesByCategory
+        };
+    }, [filteredSales, expenses, bankTransactions, filters, products, expenseCategories]);
+
+    const financialReportRef = React.useRef(null);
+    const handlePrintFinancialReport = useReactToPrint({
+        contentRef: financialReportRef,
+        documentTitle: `Bilan_Financier_${filters.startDate}_${filters.endDate}`,
+    });
 
     const getCustomerName = (customerId: string) => customers.find(c => c.id === customerId)?.name || 'client de passage';
     
@@ -322,8 +422,9 @@ const ReportsPage: React.FC = () => {
             </div>
 
             <div className="border-b border-gray-200 dark:border-gray-700">
-                <nav className="-mb-px flex space-x-6" aria-label="Tabs">
+                <nav className="-mb-px flex space-x-6 overflow-x-auto pb-2" aria-label="Tabs">
                     {isAdmin && hasPermission('reports:profit') && <ReportTab reportType="profit" label="Marge (P&L)" icon={<TrendingUpIcon className="w-5 h-5"/>}/>}
+                    {hasPermission('reports:profit') && <ReportTab reportType="financial" label="Bilan Financier" icon={<DocumentTextIcon className="w-5 h-5"/>}/>}
                     {hasPermission('reports:sales') && <ReportTab reportType="sales" label="Ventes" icon={<ShoppingCartIcon className="w-5 h-5"/>}/>}
                     {hasPermission('reports:sales') && <ReportTab reportType="cash" label="Caisse" icon={<CashIcon className="w-5 h-5"/>}/>}
                     {hasPermission('reports:services') && <ReportTab reportType="services" label="Services" icon={<SparklesIcon className="w-5 h-5"/>}/>}
@@ -333,8 +434,19 @@ const ReportsPage: React.FC = () => {
             </div>
 
             <div className="mt-6">
-                {loading && <p>Chargement des données du rapport...</p>}
-                {error && <p className="text-red-500">{error}</p>}
+                {loading && (
+                    <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 p-6 rounded-lg">
+                        <p className="text-blue-700 dark:text-blue-300">📊 Chargement des données du rapport...</p>
+                    </div>
+                )}
+                {error && (
+                    <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 p-6 rounded-lg">
+                        <p className="text-red-700 dark:text-red-300 font-bold">❌ {error}</p>
+                        <p className="text-red-600 dark:text-red-400 text-sm mt-2">
+                            Vérifiez la console du navigateur (F12) pour plus de détails
+                        </p>
+                    </div>
+                )}
                 {!loading && !error && (
                     <>
                         {activeReport === 'cash' && hasPermission('reports:sales') && (
@@ -536,6 +648,132 @@ const ReportsPage: React.FC = () => {
                                             </tr>)}
                                         </tbody>
                                     </table>
+                                </div>
+                            </div>
+                        )}
+                        {hasPermission('reports:profit') && activeReport === 'financial' && (
+                            <div ref={financialReportRef} className="p-8 bg-white dark:bg-gray-800 rounded-lg shadow-lg">
+                                {/* Avertissements de données manquantes */}
+                                {(expenses.length === 0 || expenseCategories.length === 0) && (
+                                    <div className="mb-6 p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg">
+                                        <p className="text-yellow-800 dark:text-yellow-300">
+                                            Assurez-vous que les collections <code className="bg-yellow-100 px-2 py-1 rounded">expense_categories</code> et <code className="bg-yellow-100 px-2 py-1 rounded">expenses</code> existent dans Firestore.
+                                        </p>
+                                    </div>
+                                )}
+                                
+                                <div className="flex justify-between items-start mb-8 border-b pb-4 dark:border-gray-700">
+                                    <div>
+                                        <h2 className="text-3xl font-black uppercase tracking-tight text-gray-900 dark:text-white">Bilan Financier</h2>
+                                        <p className="text-gray-500 dark:text-gray-400 mt-1">Période du {new Date(filters.startDate).toLocaleDateString()} au {new Date(filters.endDate).toLocaleDateString()}</p>
+                                    </div>
+                                    <button 
+                                        onClick={handlePrintFinancialReport}
+                                        className="flex items-center px-4 py-2 bg-gray-900 text-white rounded-lg text-sm font-bold hover:bg-black gap-2 print:hidden"
+                                    >
+                                        <PrintIcon className="w-4 h-4"/> Imprimer
+                                    </button>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+                                    <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-xl border border-blue-100 dark:border-blue-800">
+                                        <p className="text-xs font-bold text-blue-800 dark:text-blue-300 uppercase mb-1">Chiffre d'Affaires</p>
+                                        <p className="text-2xl font-black text-blue-600 dark:text-blue-400">{formatCurrency(financialReportData.totalRevenue)}</p>
+                                    </div>
+                                    <div className="bg-red-50 dark:bg-red-900/20 p-4 rounded-xl border border-red-100 dark:border-red-800">
+                                        <p className="text-xs font-bold text-red-800 dark:text-red-300 uppercase mb-1">Dépenses Opér.</p>
+                                        <p className="text-2xl font-black text-red-600 dark:text-red-400">{formatCurrency(financialReportData.totalOperatingExpenses)}</p>
+                                    </div>
+                                    <div className="bg-yellow-50 dark:bg-yellow-900/20 p-4 rounded-xl border border-yellow-100 dark:border-yellow-800">
+                                        <p className="text-xs font-bold text-yellow-800 dark:text-yellow-300 uppercase mb-1">Marge Brute</p>
+                                        <p className="text-2xl font-black text-yellow-600 dark:text-yellow-400">{formatCurrency(financialReportData.grossProfit)}</p>
+                                    </div>
+                                    <div className="bg-green-50 dark:bg-green-900/20 p-4 rounded-xl border border-green-100 dark:border-green-800">
+                                        <p className="text-xs font-bold text-green-800 dark:text-green-300 uppercase mb-1">Résultat Net</p>
+                                        <p className="text-2xl font-black text-green-600 dark:text-green-400">{formatCurrency(financialReportData.operatingProfit + financialReportData.otherIncome - financialReportData.otherExpenses)}</p>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-8">
+                                    {/* Compte de Résultat Simplifié */}
+                                    <div>
+                                        <h3 className="text-lg font-bold uppercase mb-4 border-l-4 border-primary-500 pl-3">Compte de Résultat</h3>
+                                        <div className="overflow-hidden border rounded-xl dark:border-gray-700">
+                                            <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                                                <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-100 dark:divide-gray-700">
+                                                    {/* Produits */}
+                                                    <tr className="bg-gray-50 dark:bg-gray-700/50">
+                                                        <td colSpan={2} className="px-6 py-3 text-xs font-black uppercase text-gray-500">Produits d'Exploitation</td>
+                                                    </tr>
+                                                    <tr>
+                                                        <td className="px-6 py-3 pl-10 text-sm font-medium">Ventes de Marchandises (CA)</td>
+                                                        <td className="px-6 py-3 text-right text-sm font-bold text-gray-900 dark:text-white">{formatCurrency(financialReportData.totalRevenue)}</td>
+                                                    </tr>
+                                                    
+                                                    {/* Charges Variables */}
+                                                    <tr className="bg-gray-50 dark:bg-gray-700/50">
+                                                        <td colSpan={2} className="px-6 py-3 text-xs font-black uppercase text-gray-500">Charges Variables</td>
+                                                    </tr>
+                                                    <tr>
+                                                        <td className="px-6 py-3 pl-10 text-sm font-medium">Coût d'Achat des Marchandises Vendues (CAMV)</td>
+                                                        <td className="px-6 py-3 text-right text-sm font-bold text-red-600">({formatCurrency(financialReportData.totalCOGS)})</td>
+                                                    </tr>
+
+                                                    {/* Marge Brute */}
+                                                    <tr className="bg-yellow-50 dark:bg-yellow-900/10">
+                                                        <td className="px-6 py-3 text-sm font-black uppercase text-yellow-800 dark:text-yellow-500">Marge Brute</td>
+                                                        <td className="px-6 py-3 text-right text-sm font-black text-yellow-800 dark:text-yellow-500">{formatCurrency(financialReportData.grossProfit)}</td>
+                                                    </tr>
+
+                                                    {/* Charges Fixes (Dépenses) */}
+                                                    <tr className="bg-gray-50 dark:bg-gray-700/50">
+                                                        <td colSpan={2} className="px-6 py-3 text-xs font-black uppercase text-gray-500">Charges d'Exploitation (Dépenses)</td>
+                                                    </tr>
+                                                    {Object.entries(financialReportData.expensesByCategory).length > 0 ? (
+                                                        Object.entries(financialReportData.expensesByCategory).map(([category, amount]) => (
+                                                            <tr key={category}>
+                                                                <td className="px-6 py-2 pl-10 text-sm text-gray-600 dark:text-gray-300">{category}</td>
+                                                                <td className="px-6 py-2 text-right text-sm font-medium text-gray-900 dark:text-white">{formatCurrency(amount)}</td>
+                                                            </tr>
+                                                        ))
+                                                    ) : (
+                                                        <tr>
+                                                            <td colSpan={2} className="px-6 py-3 text-sm text-gray-500 italic text-center">Aucune dépense enregistrée pour cette période</td>
+                                                        </tr>
+                                                    )}
+                                                    <tr className="border-t border-dashed">
+                                                        <td className="px-6 py-2 pl-10 text-sm font-bold italic text-gray-700 dark:text-gray-300">Total Dépenses</td>
+                                                        <td className="px-6 py-2 text-right text-sm font-bold text-red-600">({formatCurrency(financialReportData.totalOperatingExpenses)})</td>
+                                                    </tr>
+
+                                                    {/* Résultat d'Exploitation */}
+                                                    <tr className="bg-blue-50 dark:bg-blue-900/10 border-t-2 border-gray-200 dark:border-gray-600">
+                                                        <td className="px-6 py-4 text-sm font-black uppercase text-blue-800 dark:text-blue-500">Résultat d'Exploitation</td>
+                                                        <td className="px-6 py-4 text-right text-sm font-black text-blue-800 dark:text-blue-500">{formatCurrency(financialReportData.operatingProfit)}</td>
+                                                    </tr>
+
+                                                    {/* Autres Produits/Charges */}
+                                                    <tr className="bg-gray-50 dark:bg-gray-700/50">
+                                                        <td colSpan={2} className="px-6 py-3 text-xs font-black uppercase text-gray-500">Autres Opérations (Hors Exploitation)</td>
+                                                    </tr>
+                                                    <tr>
+                                                        <td className="px-6 py-2 pl-10 text-sm font-medium">Autres Produits (Entrées diverses)</td>
+                                                        <td className="px-6 py-2 text-right text-sm font-bold text-green-600">+{formatCurrency(financialReportData.otherIncome)}</td>
+                                                    </tr>
+                                                    <tr>
+                                                        <td className="px-6 py-2 pl-10 text-sm font-medium">Autres Charges (Sorties diverses)</td>
+                                                        <td className="px-6 py-2 text-right text-sm font-bold text-red-600">({formatCurrency(financialReportData.otherExpenses)})</td>
+                                                    </tr>
+
+                                                    {/* Résultat Net */}
+                                                    <tr className="bg-green-100 dark:bg-green-900/30 border-t-2 border-green-500">
+                                                        <td className="px-6 py-4 text-lg font-black uppercase text-green-900 dark:text-green-400">RÉSULTAT NET</td>
+                                                        <td className="px-6 py-4 text-right text-lg font-black text-green-900 dark:text-green-400">{formatCurrency(financialReportData.operatingProfit + financialReportData.otherIncome - financialReportData.otherExpenses)}</td>
+                                                    </tr>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         )}

@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useMemo, FormEvent, useRef } from 'react';
-import { db } from '../firebase';
-import { collection, getDocs, doc, runTransaction, DocumentData, query, orderBy, limit, getDoc } from 'firebase/firestore';
+import { supabase } from '../supabase';
 import { WarehouseTransfer, Product, Warehouse, WarehouseTransferItem, AppSettings } from '../types';
 import { Pagination } from '../components/Pagination';
 import Modal from '../components/Modal';
 import { useAuth } from '../hooks/useAuth';
+import { useData } from '../context/DataContext';
 import { DeleteIcon, PlusIcon, EyeIcon, EditIcon, PrintIcon } from '../constants';
 import { useReactToPrint } from 'react-to-print';
 import { TransferNote } from '../components/TransferNote';
@@ -12,9 +12,8 @@ import { TransferListPrint } from '../components/TransferListPrint';
 
 const TransfersPage: React.FC = () => {
     const { hasPermission } = useAuth();
+    const { products, warehouses, refreshData: refreshGlobalData } = useData();
     const [transfers, setTransfers] = useState<WarehouseTransfer[]>([]);
-    const [products, setProducts] = useState<Product[]>([]);
-    const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
     const [settings, setSettings] = useState<AppSettings | null>(null);
     const [loading, setLoading] = useState(true);
     const [isSubmitting, setIsSubmitting] = useState(false);
@@ -76,23 +75,22 @@ const TransfersPage: React.FC = () => {
             handlePrintProcess();
         }, 100);
     };
-
     const fetchData = async () => {
         setLoading(true);
         setError(null);
         try {
-            const transfersQuery = query(collection(db, "warehouseTransfers"), orderBy("date", "desc"), limit(limitCount));
-            const [transfersSnap, productsSnap, warehousesSnap] = await Promise.all([
-                getDocs(transfersQuery),
-                getDocs(collection(db, "products")),
-                getDocs(collection(db, "warehouses")),
-            ]);
-            setTransfers(transfersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as WarehouseTransfer)));
-            setProducts(productsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product)));
-            setWarehouses(warehousesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Warehouse)));
-        } catch (err) {
-            setError("Impossible de charger les données des transferts.");
-            console.error(err);
+            const { data, error: fetchError } = await supabase
+                .from('warehouse_transfers')
+                .select('*')
+                .order('date', { ascending: false })
+                .limit(limitCount);
+            
+            if (fetchError) throw fetchError;
+
+            setTransfers(data || []);
+        } catch (err: any) {
+            console.error('Erreur chargement transferts:', err);
+            setError(`Impossible de charger les transferts: ${err?.message || err}`);
         } finally {
             setLoading(false);
         }
@@ -139,10 +137,11 @@ const TransfersPage: React.FC = () => {
 
     const filteredProducts = useMemo(() => {
         if (!productSearch) return [];
+        const search = productSearch.toLowerCase();
         return products.filter(p =>
             p.type !== 'service' &&
-            ((p.name && p.name.toLowerCase().includes(productSearch.toLowerCase())) ||
-            (p.sku && p.sku.toLowerCase().includes(productSearch.toLowerCase())))
+            ((p.name && p.name.toLowerCase().includes(search)) ||
+            (p.sku && p.sku.toLowerCase().includes(search)))
         ).slice(0, 5);
     }, [productSearch, products]);
 
@@ -214,69 +213,66 @@ const TransfersPage: React.FC = () => {
         setError(null);
         
         try {
-            await runTransaction(db, async (transaction) => {
-                // 1. READ ALL DATA FIRST
-                const productReads = [];
-                for (const item of transferItems) {
-                    const productRef = doc(db, 'products', item.productId);
-                    productReads.push({ ref: productRef, item });
+            const itemsProcessed: WarehouseTransferItem[] = [];
+
+            for (const item of transferItems) {
+                const { data: productData, error: productError } = await supabase
+                    .from('products')
+                    .select('*')
+                    .eq('id', item.productId)
+                    .single();
+
+                if (productError || !productData) {
+                    throw new Error(`Produit ${item.productId} non trouvé.`);
                 }
 
-                const productDocs = await Promise.all(productReads.map(p => transaction.get(p.ref)));
-                
-                // 2. VALIDATE AND PREPARE UPDATES
-                const updates = [];
-                
-                for (let i = 0; i < productDocs.length; i++) {
-                    const docSnapshot = productDocs[i];
-                    const { item, ref } = productReads[i];
+                const product = productData as Product;
+                const stockLevels = [...(product.stockLevels || [])];
+                const fromWhIndex = stockLevels.findIndex(sl => sl.warehouseId === fromWarehouseId);
+                const toWhIndex = stockLevels.findIndex(sl => sl.warehouseId === toWarehouseId);
+                const qtyToTransfer = Number(item.quantity);
 
-                    if (!docSnapshot.exists()) {
-                        throw new Error(`Produit ${item.productId} non trouvé.`);
-                    }
-
-                    const productData = docSnapshot.data() as Product;
-                    const stockLevels = [...(productData.stockLevels || [])];
-                    
-                    const fromWhIndex = stockLevels.findIndex(sl => sl.warehouseId === fromWarehouseId);
-                    const toWhIndex = stockLevels.findIndex(sl => sl.warehouseId === toWarehouseId);
-
-                    if (fromWhIndex === -1 || stockLevels[fromWhIndex].quantity < item.quantity) {
-                         throw new Error(`Stock insuffisant pour ${productData.name}. Disponible: ${fromWhIndex > -1 ? stockLevels[fromWhIndex].quantity : 0}, Demandé: ${item.quantity}`);
-                    }
-                    
-                    // Decrease from warehouse
-                    stockLevels[fromWhIndex].quantity -= item.quantity;
-                    
-                    // Increase in to warehouse
-                    if (toWhIndex > -1) {
-                        stockLevels[toWhIndex].quantity += item.quantity;
-                    } else {
-                        stockLevels.push({ warehouseId: toWarehouseId, quantity: item.quantity });
-                    }
-                    
-                    updates.push({ ref, stockLevels });
-                }
-
-                // 3. EXECUTE ALL WRITES
-                for (const update of updates) {
-                    transaction.update(update.ref, { stockLevels: update.stockLevels });
+                if (fromWhIndex === -1 || Number(stockLevels[fromWhIndex].quantity) < qtyToTransfer) {
+                    throw new Error(`Stock insuffisant pour ${product.name}. Disponible: ${fromWhIndex > -1 ? stockLevels[fromWhIndex].quantity : 0}, Demandé: ${qtyToTransfer}`);
                 }
                 
-                const newTransfer: Omit<WarehouseTransfer, 'id'> = {
-                    date: new Date().toISOString(),
-                    fromWarehouseId,
-                    toWarehouseId,
-                    items: transferItems,
-                    status: 'Complété',
-                    driverName: formState.driverName
-                };
+                stockLevels[fromWhIndex].quantity = Number(stockLevels[fromWhIndex].quantity) - qtyToTransfer;
                 
-                const transferRef = doc(collection(db, "warehouseTransfers"));
-                transaction.set(transferRef, newTransfer as DocumentData);
-            });
+                if (toWhIndex > -1) {
+                    stockLevels[toWhIndex].quantity = Number(stockLevels[toWhIndex].quantity) + qtyToTransfer;
+                } else {
+                    stockLevels.push({ warehouseId: toWarehouseId, quantity: qtyToTransfer });
+                }
+
+                const { error: updateError } = await supabase
+                    .from('products')
+                    .update({ stockLevels })
+                    .eq('id', item.productId);
+                
+                if (updateError) throw updateError;
+                itemsProcessed.push(item);
+            }
+
+            const transferId = crypto.randomUUID();
+            const newTransfer: WarehouseTransfer = {
+                id: transferId,
+                date: new Date().toISOString(),
+                fromWarehouseId,
+                toWarehouseId,
+                items: itemsProcessed,
+                status: 'Complété',
+                driverName: formState.driverName || ''
+            };
+
+            const { error: insertError } = await supabase
+                .from('warehouse_transfers')
+                .insert(newTransfer);
+
+            if (insertError) throw insertError;
             
-            await fetchData();
+            await fetchData(); // Refresh local transfers list
+            if (refreshGlobalData) await refreshGlobalData(['products']); // Refresh global product data
+            
             setFormState({ fromWarehouseId: '', toWarehouseId: '', driverName: '' });
             setTransferItems([]);
             setCurrentItem({ productId: '', quantity: 1 });
@@ -303,53 +299,53 @@ const TransfersPage: React.FC = () => {
 
         setLoading(true);
         try {
-            await runTransaction(db, async (transaction) => {
-                const transferRef = doc(db, 'warehouseTransfers', transfer.id);
-                const transferDoc = await transaction.get(transferRef);
-                if (!transferDoc.exists()) throw new Error("Transfert introuvable.");
+            const itemsToRevert = transfer.items || (transfer.productId ? [{ productId: transfer.productId, quantity: transfer.quantity || 0 }] : []);
 
-                const itemsToRevert = transfer.items || (transfer.productId ? [{ productId: transfer.productId, quantity: transfer.quantity || 0 }] : []);
+            for (const item of itemsToRevert) {
+                const { data: productData, error: productError } = await supabase
+                    .from('products')
+                    .select('*')
+                    .eq('id', item.productId)
+                    .single();
 
-                const productReads = itemsToRevert.map(item => ({ 
-                    ref: doc(db, 'products', item.productId), 
-                    item 
-                }));
-                const productDocs = await Promise.all(productReads.map(p => transaction.get(p.ref)));
-
-                const updates = [];
-                for (let i = 0; i < productDocs.length; i++) {
-                    const docSnapshot = productDocs[i];
-                    const { item, ref } = productReads[i];
-
-                    if (!docSnapshot.exists()) throw new Error(`Produit ${item.productId} non trouvé.`);
-
-                    const productData = docSnapshot.data() as Product;
-                    const stockLevels = [...(productData.stockLevels || [])];
-
-                    const fromWhIndex = stockLevels.findIndex(sl => sl.warehouseId === transfer.fromWarehouseId);
-                    const toWhIndex = stockLevels.findIndex(sl => sl.warehouseId === transfer.toWarehouseId);
-
-                    if (toWhIndex === -1 || stockLevels[toWhIndex].quantity < item.quantity) {
-                        throw new Error(`Impossible d'annuler : Stock insuffisant dans l'entrepôt de destination (${getWarehouseName(transfer.toWarehouseId)}) pour ${productData.name}.`);
-                    }
-
-                    stockLevels[toWhIndex].quantity -= item.quantity;
-                    if (fromWhIndex > -1) {
-                        stockLevels[fromWhIndex].quantity += item.quantity;
-                    } else {
-                        stockLevels.push({ warehouseId: transfer.fromWarehouseId, quantity: item.quantity });
-                    }
-
-                    updates.push({ ref, stockLevels });
+                if (productError || !productData) {
+                    throw new Error(`Produit ${item.productId} non trouvé.`);
                 }
 
-                for (const update of updates) {
-                    transaction.update(update.ref, { stockLevels: update.stockLevels });
+                const product = productData as Product;
+                const stockLevels = [...(product.stockLevels || [])];
+                const fromWhIndex = stockLevels.findIndex(sl => sl.warehouseId === transfer.fromWarehouseId);
+                const toWhIndex = stockLevels.findIndex(sl => sl.warehouseId === transfer.toWarehouseId);
+                const qtyToRevert = Number(item.quantity);
+
+                if (toWhIndex === -1 || Number(stockLevels[toWhIndex].quantity) < qtyToRevert) {
+                    throw new Error(`Impossible d'annuler : Stock insuffisant dans l'entrepôt de destination (${getWarehouseName(transfer.toWarehouseId)}) pour ${product.name}.`);
                 }
-                transaction.delete(transferRef);
-            });
+
+                stockLevels[toWhIndex].quantity = Number(stockLevels[toWhIndex].quantity) - qtyToRevert;
+                if (fromWhIndex > -1) {
+                    stockLevels[fromWhIndex].quantity = Number(stockLevels[fromWhIndex].quantity) + qtyToRevert;
+                } else {
+                    stockLevels.push({ warehouseId: transfer.fromWarehouseId, quantity: qtyToRevert });
+                }
+
+                const { error: updateError } = await supabase
+                    .from('products')
+                    .update({ stockLevels })
+                    .eq('id', item.productId);
+                
+                if (updateError) throw updateError;
+            }
+
+            const { error: deleteError } = await supabase
+                .from('warehouse_transfers')
+                .delete()
+                .eq('id', transfer.id);
+            
+            if (deleteError) throw deleteError;
 
             await fetchData();
+            if (refreshGlobalData) await refreshGlobalData(['products']);
             setError(null);
         } catch (err: any) {
             setError(`Erreur lors de la suppression : ${err.message}`);
@@ -363,53 +359,61 @@ const TransfersPage: React.FC = () => {
 
         setLoading(true);
         try {
-            await runTransaction(db, async (transaction) => {
-                const transferRef = doc(db, 'warehouseTransfers', transfer.id);
-                const transferDoc = await transaction.get(transferRef);
-                if (!transferDoc.exists()) throw new Error("Transfert introuvable.");
+            // Determine items to revert
+            const itemsToLoad = transfer.items || (transfer.productId ? [{ productId: transfer.productId, quantity: transfer.quantity || 0 }] : []);
+            
+            // Revert stock changes
+            for (const item of itemsToLoad) {
+                const { data: productData, error: productError } = await supabase
+                    .from('products')
+                    .select('*')
+                    .eq('id', item.productId)
+                    .single();
 
-                const itemsToRevert = transfer.items || (transfer.productId ? [{ productId: transfer.productId, quantity: transfer.quantity || 0 }] : []);
+                if (productError || !productData) throw new Error(`Produit ${item.productId} non trouvé.`);
+
+                const product = productData as Product;
+                const stockLevels = [...(product.stockLevels || [])];
+                const fromWhIndex = stockLevels.findIndex(sl => sl.warehouseId === transfer.fromWarehouseId);
+                const toWhIndex = stockLevels.findIndex(sl => sl.warehouseId === transfer.toWarehouseId);
+                const qtyToRevert = Number(item.quantity);
+
+                if (toWhIndex === -1 || Number(stockLevels[toWhIndex].quantity) < qtyToRevert) {
+                    throw new Error(`Impossible de modifier : Stock insuffisant dans l'entrepôt de destination pour ${product.name}.`);
+                }
+
+                stockLevels[toWhIndex].quantity = Number(stockLevels[toWhIndex].quantity) - qtyToRevert;
+                if (fromWhIndex > -1) {
+                    stockLevels[fromWhIndex].quantity = Number(stockLevels[fromWhIndex].quantity) + qtyToRevert;
+                } else {
+                    stockLevels.push({ warehouseId: transfer.fromWarehouseId, quantity: qtyToRevert });
+                }
+
+                const { error: updateError } = await supabase
+                    .from('products')
+                    .update({ stockLevels })
+                    .eq('id', item.productId);
                 
-                const productReads = itemsToRevert.map(item => ({ ref: doc(db, 'products', item.productId), item }));
-                const productDocs = await Promise.all(productReads.map(p => transaction.get(p.ref)));
+                if (updateError) throw updateError;
+            }
 
-                const updates = [];
-                for (let i = 0; i < productDocs.length; i++) {
-                    const docSnapshot = productDocs[i];
-                    const { item, ref } = productReads[i];
-                    if (!docSnapshot.exists()) throw new Error(`Produit ${item.productId} non trouvé.`);
-
-                    const productData = docSnapshot.data() as Product;
-                    const stockLevels = [...(productData.stockLevels || [])];
-                    const fromWhIndex = stockLevels.findIndex(sl => sl.warehouseId === transfer.fromWarehouseId);
-                    const toWhIndex = stockLevels.findIndex(sl => sl.warehouseId === transfer.toWarehouseId);
-
-                    if (toWhIndex === -1 || stockLevels[toWhIndex].quantity < item.quantity) {
-                        throw new Error(`Impossible de modifier : Stock insuffisant dans l'entrepôt de destination pour ${productData.name}.`);
-                    }
-
-                    stockLevels[toWhIndex].quantity -= item.quantity;
-                    if (fromWhIndex > -1) {
-                        stockLevels[fromWhIndex].quantity += item.quantity;
-                    } else {
-                        stockLevels.push({ warehouseId: transfer.fromWarehouseId, quantity: item.quantity });
-                    }
-                    updates.push({ ref, stockLevels });
-                }
-
-                for (const update of updates) {
-                    transaction.update(update.ref, { stockLevels: update.stockLevels });
-                }
-                transaction.delete(transferRef);
-            });
+            const { error: deleteError } = await supabase
+                .from('warehouse_transfers')
+                .delete()
+                .eq('id', transfer.id);
+                
+            if (deleteError) throw deleteError;
 
             await fetchData();
+            if (refreshGlobalData) await refreshGlobalData(['products']);
+            
+            // Pre-fill the form
             setFormState({
-                fromWarehouseId: transfer.fromWarehouseId,
-                toWarehouseId: transfer.toWarehouseId
+                fromWarehouseId: transfer.fromWarehouseId || '',
+                toWarehouseId: transfer.toWarehouseId || '',
+                driverName: transfer.driverName || '',
             });
             
-            const itemsToLoad = transfer.items || (transfer.productId ? [{ productId: transfer.productId, quantity: transfer.quantity || 0 }] : []);
             setTransferItems(itemsToLoad);
             
             setError(null);
@@ -460,26 +464,18 @@ const TransfersPage: React.FC = () => {
     const totalPages = Math.ceil(filteredTransfers.length / itemsPerPage);
 
     const totalPageVolume = useMemo(() => {
-        return paginatedTransfers.reduce((sum, transfer) => {
-            let vol = 0;
-            if (transfer.items && transfer.items.length > 0) {
-                vol = transfer.items.reduce((itemSum, item) => itemSum + Number(item.quantity || 0), 0);
-            } else if (transfer.quantity) {
-                vol = Number(transfer.quantity || 0);
-            }
-            return sum + vol;
+        return paginatedTransfers.reduce((sum, t) => {
+            const itemsVolume = (t.items || []).reduce((s, i) => s + Number(i.quantity || 0), 0);
+            const legacyVolume = t.productId ? Number(t.quantity || 0) : 0;
+            return sum + itemsVolume + legacyVolume;
         }, 0);
     }, [paginatedTransfers]);
 
     const totalGlobalVolume = useMemo(() => {
-        return filteredTransfers.reduce((sum, transfer) => {
-            let vol = 0;
-            if (transfer.items && transfer.items.length > 0) {
-                vol = transfer.items.reduce((itemSum, item) => itemSum + Number(item.quantity || 0), 0);
-            } else if (transfer.quantity) {
-                vol = Number(transfer.quantity || 0);
-            }
-            return sum + vol;
+        return filteredTransfers.reduce((sum, t) => {
+            const itemsVolume = (t.items || []).reduce((s, i) => s + Number(i.quantity || 0), 0);
+            const legacyVolume = t.productId ? Number(t.quantity || 0) : 0;
+            return sum + itemsVolume + legacyVolume;
         }, 0);
     }, [filteredTransfers]);
 
@@ -637,7 +633,10 @@ const TransfersPage: React.FC = () => {
                             <option value={500}>500 derniers</option>
                         </select>
                         <button 
-                            onClick={() => setShowAll(!showAll)} 
+                            onClick={() => {
+                                setShowAll(!showAll);
+                                if (!showAll) setCurrentPage(1);
+                            }} 
                             className="px-3 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 font-bold uppercase text-xs transition-colors"
                         >
                             {showAll ? 'Vue par page' : 'Tout afficher'}

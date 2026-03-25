@@ -1,8 +1,8 @@
 
 import React, { useMemo, useState, useEffect } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import { db } from '../firebase';
-import { collection, getDocs, query, orderBy, limit, getAggregateFromServer, sum, count } from 'firebase/firestore';
+import { useData } from '../context/DataContext';
+import { supabase } from '../supabase';
 import { Sale, Customer, Product, Warehouse } from '../types';
 import { WarningIcon, TrendingUpIcon, CustomersIcon, WarehouseIcon, ChartBarIcon, SparklesIcon, ProductsIcon, PaymentIcon } from '../constants';
 import { useNavigate } from 'react-router-dom';
@@ -10,83 +10,52 @@ import { formatCurrency } from '../utils/formatters';
 
 const DashboardPage: React.FC = () => {
   const { user } = useAuth();
+  const { customers, products, warehouses, loading: dataLoading } = useData();
   const navigate = useNavigate();
   const [sales, setSales] = useState<Sale[]>([]);
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [salesLoading, setSalesLoading] = useState(true);
   const [globalStats, setGlobalStats] = useState({
       totalRevenue: 0,
       totalCollected: 0,
       totalCount: 0
   });
 
+  const loading = dataLoading || salesLoading;
+
   useEffect(() => {
-    const fetchData = async () => {
-        setLoading(true);
+    const fetchSales = async () => {
+        setSalesLoading(true);
         try {
-            // 1. Fetch core data (Products, Customers, Warehouses)
-            const [customersSnapshot, productsSnapshot, warehousesSnapshot] = await Promise.all([
-                getDocs(collection(db, "customers")),
-                getDocs(collection(db, "products")),
-                getDocs(collection(db, "warehouses")),
-            ]);
+            const thirtyDaysAgo = new Date();
+            thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+            
+            const { data: salesData, error: salesError } = await supabase
+                .from('sales')
+                .select('*')
+                .gte('date', thirtyDaysAgo.toISOString())
+                .order('date', { ascending: false })
+                .limit(200);
+            
+            if (salesError) throw salesError;
 
-            setCustomers(customersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Customer)));
-            setProducts(productsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product)));
-            setWarehouses(warehousesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Warehouse)));
+            setSales(salesData as Sale[]);
 
-            // 2. Try optimized fetch (Aggregation + Recent Sales)
-            try {
-                const recentSalesQuery = query(collection(db, "sales"), orderBy("date", "desc"), limit(300));
-                const salesColl = collection(db, "sales");
-                
-                const [salesSnapshot, aggregationSnapshot] = await Promise.all([
-                    getDocs(recentSalesQuery),
-                    getAggregateFromServer(salesColl, {
-                        totalRevenue: sum('grandTotal'),
-                        totalCollected: sum('paidAmount'),
-                        totalCount: count()
-                    })
-                ]);
-
-                setSales(salesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Sale)));
-                
-                const aggData = aggregationSnapshot.data();
-                setGlobalStats({
-                    totalRevenue: aggData.totalRevenue || 0,
-                    totalCollected: aggData.totalCollected || 0,
-                    totalCount: aggData.totalCount || 0
-                });
-
-            } catch (aggError) {
-                console.warn("Aggregation failed, falling back to full fetch", aggError);
-                // Fallback: Fetch ALL sales if aggregation fails
-                const allSalesQuery = query(collection(db, "sales"), orderBy("date", "desc"));
-                const allSalesSnapshot = await getDocs(allSalesQuery);
-                const allSales = allSalesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Sale));
-                
-                setSales(allSales);
-                
-                // Calculate stats client-side
-                const totalRev = allSales.reduce((sum, s) => sum + s.grandTotal, 0);
-                const totalCol = allSales.reduce((sum, s) => sum + (s.paidAmount || 0), 0);
-                
-                setGlobalStats({
-                    totalRevenue: totalRev,
-                    totalCollected: totalCol,
-                    totalCount: allSales.length
-                });
-            }
-
+            const totalRev = (salesData as Sale[]).reduce((sum, s) => sum + (s.grandTotal || 0), 0);
+            const totalCol = (salesData as Sale[]).reduce((sum, s) => sum + (s.paidAmount || 0), 0);
+            
+            setGlobalStats({
+                totalRevenue: totalRev,
+                totalCollected: totalCol,
+                totalCount: salesData.length
+            });
+            
         } catch (err: any) {
             console.error("Dashboard error", err);
         } finally {
-            setLoading(false);
+            setSalesLoading(false);
         }
     };
-    fetchData();
+    fetchSales();
   }, []);
 
   const getWarehouseColor = (color?: string) => {
@@ -135,6 +104,11 @@ const DashboardPage: React.FC = () => {
   };
 
   const stats = useMemo(() => {
+    // Create Maps for O(1) lookups
+    const productMap = new Map(products.map(p => [p.id, p]));
+    const customerMap = new Map(customers.map(c => [c.id, c]));
+
+    // Optimized stats calculation with limited data (30 days max)
     const last7Days = [...Array(7)].map((_, i) => {
         const d = new Date();
         d.setDate(d.getDate() - (6 - i));
@@ -154,9 +128,10 @@ const DashboardPage: React.FC = () => {
     const productPerf: Record<string, { name: string, qty: number, rev: number }> = {};
     const customerPerf: Record<string, { name: string, total: number, debt: number }> = {};
 
+    // Optimized iteration with limited sales data
     sales.forEach(sale => {
         if (!customerPerf[sale.customerId]) {
-            const c = customers.find(cust => cust.id === sale.customerId);
+            const c = customerMap.get(sale.customerId);
             customerPerf[sale.customerId] = { name: c?.name || 'client de passage', total: 0, debt: 0 };
         }
         customerPerf[sale.customerId].total += sale.grandTotal;
@@ -164,7 +139,7 @@ const DashboardPage: React.FC = () => {
 
         sale.items.forEach(item => {
             if (!productPerf[item.productId]) {
-                const p = products.find(prod => prod.id === item.productId);
+                const p = productMap.get(item.productId);
                 productPerf[item.productId] = { name: p?.name || 'Inconnu', qty: 0, rev: 0 };
             }
             productPerf[item.productId].qty += item.quantity;
@@ -182,21 +157,27 @@ const DashboardPage: React.FC = () => {
     
     let estProfit = 0;
     sales.forEach(s => s.items.forEach(i => {
-        const p = products.find(prod => prod.id === i.productId);
+        const p = productMap.get(i.productId);
         if(p) estProfit += (i.price - p.cost) * i.quantity;
     }));
 
-    const warehouseStats = warehouses.map(w => {
-        let count = 0;
-        let value = 0;
-        products.forEach(p => {
-            const level = p.stockLevels?.find(sl => sl.warehouseId === w.id);
-            if (level) {
-                count += level.quantity;
-                value += level.quantity * p.cost;
+    // Optimized warehouse stats calculation (O(P + W) instead of O(W * P))
+    const warehouseStatsMap = new Map<string, { count: number, value: number }>();
+    warehouses.forEach(w => warehouseStatsMap.set(w.id, { count: 0, value: 0 }));
+
+    products.forEach(p => {
+        p.stockLevels?.forEach(sl => {
+            const stats = warehouseStatsMap.get(sl.warehouseId);
+            if (stats) {
+                stats.count += sl.quantity;
+                stats.value += sl.quantity * p.cost;
             }
         });
-        return { ...w, count, value };
+    });
+
+    const warehouseStats = warehouses.map(w => {
+        const stats = warehouseStatsMap.get(w.id) || { count: 0, value: 0 };
+        return { ...w, ...stats };
     });
 
     return { dailyRevenue, maxDaily, topProducts, topCustomers, totalRevenue, totalCollected, estProfit, avgSale: totalCount ? Math.ceil(totalRevenue / totalCount) : 0, warehouseStats };

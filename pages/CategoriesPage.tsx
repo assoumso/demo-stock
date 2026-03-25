@@ -1,40 +1,38 @@
-import React, { useState, useEffect, FormEvent } from 'react';
-import { db } from '../firebase';
-import { collection, getDocs, doc, addDoc, updateDoc, deleteDoc, DocumentData, writeBatch } from 'firebase/firestore';
+import React, { useState, FormEvent } from 'react';
+import { supabase } from '../supabase';
 import { Category } from '../types';
 import Modal from '../components/Modal';
 import { PlusIcon, EditIcon, DeleteIcon } from '../constants';
 import DropdownMenu, { DropdownMenuItem } from '../components/DropdownMenu';
 import { useAuth } from '../hooks/useAuth';
+import { useData } from '../context/DataContext';
 
 const CategoriesPage: React.FC = () => {
     const { hasPermission } = useAuth();
-    const [items, setItems] = useState<Category[]>([]);
-    const [loading, setLoading] = useState(true);
+    const { categories: items, loading, refreshData } = useData();
     const [error, setError] = useState<string | null>(null);
-    const [isModalOpen, setIsModalOpen] = useState(false);
-    const [currentItem, setCurrentItem] = useState<Partial<Category>>({});
-    const [isEditing, setIsEditing] = useState(false);
-    
+
     // Selection State
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
     const [isBulkDeleteModalOpen, setIsBulkDeleteModalOpen] = useState(false);
 
-    const fetchData = async () => {
-        setLoading(true);
-        try {
-            const snap = await getDocs(collection(db, "categories"));
-            setItems(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Category)));
-        } catch (err) {
-            setError("Impossible de charger les catégories.");
-        } finally {
-            setLoading(false);
-        }
-    };
-    useEffect(() => { fetchData(); }, []);
+    // Modal State
+    const [isModalOpen, setIsModalOpen] = useState(false);
+    const [currentItem, setCurrentItem] = useState<Partial<Category>>({});
+    const [isEditing, setIsEditing] = useState(false);
 
-    const openModalForNew = () => { setIsEditing(false); setCurrentItem({ name: '' }); setIsModalOpen(true); };
-    const openModalForEdit = (item: Category) => { setIsEditing(true); setCurrentItem(item); setIsModalOpen(true); };
+    const openModalForNew = () => {
+        setIsEditing(false);
+        setCurrentItem({ name: '' });
+        setIsModalOpen(true);
+    };
+
+    const openModalForEdit = (item: Category) => {
+        setIsEditing(true);
+        setCurrentItem(item);
+        setIsModalOpen(true);
+    };
+
     const closeModal = () => setIsModalOpen(false);
 
     const handleSave = async (e: FormEvent) => {
@@ -42,26 +40,46 @@ const CategoriesPage: React.FC = () => {
         const { id, ...data } = currentItem;
         if (!data.name) return;
         try {
-            if (isEditing) { await updateDoc(doc(db, 'categories', id!), data as DocumentData); } 
-            else { await addDoc(collection(db, "categories"), data); }
-            await fetchData();
+            if (isEditing && id) {
+                const { error } = await supabase.from('categories').update(data).eq('id', id);
+                if (error) throw error;
+            } else {
+                const newId = crypto.randomUUID();
+                const { error } = await supabase.from('categories').insert({ ...data, id: newId });
+                if (error) throw error;
+            }
             closeModal();
-        } catch (err) { setError("Erreur d'enregistrement."); }
+            await refreshData(['config']);
+        } catch (err: any) {
+            console.error(err);
+            setError("Erreur d'enregistrement: " + err.message);
+        }
     };
+
     const handleDelete = async (id: string) => {
         if (window.confirm("Supprimer cette catégorie ?")) {
-            try { await deleteDoc(doc(db, "categories", id)); await fetchData(); } 
-            catch (err) { setError("Erreur de suppression."); }
+            try {
+                const { error } = await supabase.from('categories').delete().eq('id', id);
+                if (error) throw error;
+                await refreshData(['config']);
+            } catch (err: any) {
+                console.error(err);
+                setError("Erreur de suppression: " + err.message);
+            }
         }
     };
 
     const handleBulkDelete = async () => {
-        const batch = writeBatch(db);
-        selectedIds.forEach(id => batch.delete(doc(db, 'categories', id)));
-        await batch.commit();
-        await fetchData();
-        setSelectedIds([]);
-        setIsBulkDeleteModalOpen(false);
+        try {
+            const { error } = await supabase.from('categories').delete().in('id', selectedIds);
+            if (error) throw error;
+            setIsBulkDeleteModalOpen(false);
+            setSelectedIds([]);
+            await refreshData(['config']);
+        } catch (err: any) {
+            console.error(err);
+            setError("Erreur lors de la suppression en masse: " + err.message);
+        }
     };
 
     const handleSelectOne = (id: string) => {

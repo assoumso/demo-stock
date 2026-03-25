@@ -1,8 +1,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { db } from '../firebase';
-import { collection, doc, query, orderBy, onSnapshot, deleteDoc, writeBatch } from 'firebase/firestore';
+import { supabase } from '../supabase';
 import { Quote } from '../types';
 import { useAuth } from '../hooks/useAuth';
 import { useData } from '../context/DataContext';
@@ -10,7 +9,7 @@ import Modal from '../components/Modal';
 import { Pagination } from '../components/Pagination';
 import { PlusIcon, EditIcon, DeleteIcon, DocumentTextIcon, PrintIcon, CheckIcon } from '../constants';
 import DropdownMenu, { DropdownMenuItem } from '../components/DropdownMenu';
-import { formatCurrency } from '../utils/formatters';
+import { formatCurrency, formatDate } from '../utils/formatters';
 import { useReactToPrint } from 'react-to-print';
 
 const QuotesPage: React.FC = () => {
@@ -32,17 +31,24 @@ const QuotesPage: React.FC = () => {
     const [searchTerm, setSearchTerm] = useState('');
 
     useEffect(() => {
-        const q = query(collection(db, "quotes"), orderBy("date", "desc"));
-        const unsubscribe = onSnapshot(q, (snapshot) => {
-            setQuotes(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Quote)));
-            setLoading(false);
-        }, (err) => {
-            setError("Erreur de synchronisation des devis.");
-            setLoading(false);
-            console.error(err);
-        });
-
-        return () => unsubscribe();
+        const fetchQuotes = async () => {
+            try {
+                const { data, error: fetchError } = await supabase
+                    .from('quotes')
+                    .select('*')
+                    .order('date', { ascending: false });
+                
+                if (fetchError) throw fetchError;
+                setQuotes(data || []);
+            } catch (err) {
+                setError("Erreur de chargement des devis.");
+                console.error(err);
+            } finally {
+                setLoading(false);
+            }
+        };
+        
+        fetchQuotes();
     }, []);
 
     const filteredQuotes = useMemo(() => {
@@ -63,10 +69,17 @@ const QuotesPage: React.FC = () => {
 
     const totalPages = Math.ceil(filteredQuotes.length / itemsPerPage);
 
-    const handleDeleteQuote = async () => {
+    const handleDelete = async () => {
         if (!quoteToDelete) return;
         try {
-            await deleteDoc(doc(db, "quotes", quoteToDelete.id));
+            const { error: deleteError } = await supabase
+                .from('quotes')
+                .delete()
+                .eq('id', quoteToDelete.id);
+            
+            if (deleteError) throw deleteError;
+            
+            setQuotes(prev => prev.filter(q => q.id !== quoteToDelete.id));
             setIsDeleteModalOpen(false);
             setQuoteToDelete(null);
         } catch (err) {
@@ -76,9 +89,14 @@ const QuotesPage: React.FC = () => {
 
     const handleBulkDelete = async () => {
         try {
-            const batch = writeBatch(db);
-            selectedIds.forEach(id => batch.delete(doc(db, "quotes", id)));
-            await batch.commit();
+            const { error: deleteError } = await supabase
+                .from('quotes')
+                .delete()
+                .in('id', selectedIds);
+            
+            if (deleteError) throw deleteError;
+            
+            setQuotes(prev => prev.filter(q => !selectedIds.includes(q.id)));
             setSelectedIds([]);
             setIsBulkDeleteModalOpen(false);
         } catch (err) {
@@ -179,7 +197,7 @@ const QuotesPage: React.FC = () => {
                                                 />
                                             </td>
                                             <td className="px-6 py-4 font-bold text-gray-900 dark:text-white">{quote.referenceNumber}</td>
-                                            <td className="px-6 py-4 text-sm text-gray-500">{new Date(quote.date).toLocaleDateString()}</td>
+                                            <td className="px-6 py-4 text-sm text-gray-500">{formatDate(quote.date)}</td>
                                             <td className="px-6 py-4 text-sm font-medium text-gray-900 dark:text-white">{getCustomerName(quote.customerId)}</td>
                                             <td className="px-6 py-4 text-right font-black text-primary-600">{formatCurrency(quote.grandTotal)}</td>
                                             <td className="px-6 py-4 text-center">
@@ -225,7 +243,7 @@ const QuotesPage: React.FC = () => {
                     <p className="text-gray-600">Voulez-vous vraiment supprimer le devis <span className="font-bold text-gray-900">{quoteToDelete?.referenceNumber}</span> ?</p>
                     <div className="mt-6 flex justify-end space-x-3">
                         <button onClick={() => setIsDeleteModalOpen(false)} className="px-4 py-2 border rounded-lg text-gray-600 hover:bg-gray-50 font-bold">Annuler</button>
-                        <button onClick={handleDeleteQuote} className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 font-bold">Supprimer</button>
+                        <button onClick={handleDelete} className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 font-bold">Supprimer</button>
                     </div>
                 </div>
             </Modal>

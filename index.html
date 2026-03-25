@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title></title>
+    <title>ETS DEMO-STOCKAGES - Système de Gestion & Ventes</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -15,7 +15,6 @@
     "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
     "react/": "https://aistudiocdn.com/react@^19.2.0/",
     "react-router-dom": "https://aistudiocdn.com/react-router-dom@^7.9.4",
-    "firebase/": "https://aistudiocdn.com/firebase@^12.4.0/",
     "react-to-print": "https://aistudiocdn.com/react-to-print@^3.2.0",
     "react-dom": "https://esm.sh/react-dom@^19.2.3"
   }
@@ -28,17 +27,21 @@
     <script>
       // Système de thèmes statiques pour le pré-chargement
       const THEME_PALETTES = {
+        teal: { '50': '240 253 250', '100': '204 251 241', '200': '167 243 228', '300': '107 231 208', '400': '45 212 191', '500': '20 184 166', '600': '13 148 136', '700': '15 118 110', '800': '17 94 89', '900': '19 78 74', '950': '4 47 46' },
         gold: { '50': '255 251 240', '100': '254 243 199', '200': '253 230 138', '300': '252 211 77', '400': '251 191 36', '500': '212 175 55', '600': '180 148 31', '700': '140 110 10', '800': '110 85 8', '900': '90 65 5', '950': '69 26 3' },
         amber: { '50': '255 251 235', '100': '254 243 199', '200': '253 230 138', '300': '252 211 77', '400': '251 191 36', '500': '245 158 11', '600': '217 119 6', '700': '180 83 9', '800': '146 64 14', '900': '120 53 15', '950': '69 26 3' },
-        teal: { '50': '240 253 250', '100': '204 251 241', '200': '167 243 228', '300': '107 231 208', '400': '45 212 191', '500': '20 184 166', '600': '13 148 136', '700': '15 118 110', '800': '17 94 89', '900': '19 78 74', '950': '4 47 46' },
         sky: { '50': '240 249 255', '100': '224 242 254', '200': '186 230 253', '300': '125 211 252', '400': '56 189 248', '500': '14 165 233', '600': '2 132 199', '700': '3 105 161', '800': '7 89 133', '900': '12 74 110', '950': '8 47 73' },
         rose: { '50': '255 241 242', '100': '255 228 230', '200': '254 205 211', '300': '253 164 175', '400': '251 113 133', '500': '244 63 94', '600': '225 29 72', '700': '190 18 60', '800': '159 18 57', '900': '136 19 55', '950': '76 5 25' }
       };
 
       // ANTI-FLASH : Appliquer le thème immédiatement avant le rendu
       (function() {
-        const savedTheme = localStorage.getItem('app_theme_color') || 'gold';
-        const palette = THEME_PALETTES[savedTheme] || THEME_PALETTES.gold;
+        // Nettoyage des anciennes clés pour éviter les conflits avec d'autres apps
+        const oldKeys = ['app_theme_color', 'app_company_name', 'app_logo_url'];
+        oldKeys.forEach(key => localStorage.removeItem(key));
+
+        const savedTheme = localStorage.getItem('coul_freres_theme_color') || 'teal';
+        const palette = THEME_PALETTES[savedTheme] || THEME_PALETTES.teal;
         for (const key in palette) {
           document.documentElement.style.setProperty(`--color-primary-${key}`, palette[key]);
         }
@@ -70,23 +73,31 @@
       }
     </script>
     <style>
-        /* Variables par défaut au cas où LocalStorage est vide (Gold) */
+        /* Variables par défaut du thème teal pour éviter tout flash blanc */
         :root {
-            --color-primary-50: 255 251 240;
-            --color-primary-100: 254 243 199;
-            --color-primary-200: 253 230 138;
-            --color-primary-300: 252 211 77;
-            --color-primary-400: 251 191 36;
-            --color-primary-500: 212 175 55;
-            --color-primary-600: 180 148 31;
-            --color-primary-700: 140 110 10;
-            --color-primary-800: 110 85 8;
-            --color-primary-900: 90 65 5;
-            --color-primary-950: 69 26 3;
+            --color-primary-50: 240 253 250;
+            --color-primary-100: 204 251 241;
+            --color-primary-200: 167 243 228;
+            --color-primary-300: 107 231 208;
+            --color-primary-400: 45 212 191;
+            --color-primary-500: 20 184 166;
+            --color-primary-600: 13 148 136;
+            --color-primary-700: 15 118 110;
+            --color-primary-800: 17 94 89;
+            --color-primary-900: 19 78 74;
+            --color-primary-950: 4 47 46;
         }
 
         body {
             font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6; /* bg-gray-100 pour matcher le fond de l'app */
+        }
+        
+        /* Mode sombre si activé par le système */
+        @media (prefers-color-scheme: dark) {
+            body {
+                background-color: #111827; /* bg-gray-900 */
+            }
         }
 
         @media print {

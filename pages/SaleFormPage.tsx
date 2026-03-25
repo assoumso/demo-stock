@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useMemo, FormEvent } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { db } from '../firebase';
-import { collection, doc, getDoc, getDocs, addDoc, updateDoc, runTransaction, DocumentData, query, where, DocumentReference } from 'firebase/firestore';
-import { Sale, SaleItem, Product, Customer, Warehouse, PaymentStatus, AppSettings } from '../types';
+import { supabase } from '../supabase';
+import { Sale, SaleItem, Product, Customer, Warehouse, PaymentStatus, PaymentMethod, AppSettings } from '../types';
 import { DeleteIcon, PlusIcon, WarningIcon } from '../constants';
+import { useData } from '../context/DataContext';
 import { useAuth } from '../hooks/useAuth';
-import { useBarcodeScanner } from '../hooks/useBarcodeScanner'; // Import du hook
+import { useBarcodeScanner } from '../hooks/useBarcodeScanner';
+import { useToast } from '../context/ToastContext';
 import Modal from '../components/Modal';
+import QuickCustomerModal from '../components/QuickCustomerModal';
 import { formatCurrency } from '../utils/formatters';
 
 type FormSale = Omit<Sale, 'id'>;
@@ -16,17 +18,23 @@ const SaleFormPage: React.FC = () => {
     const navigate = useNavigate();
     const location = useLocation();
     const { user } = useAuth();
+    const { addToast } = useToast();
+    const { customers, warehouses, products, settings, loading: dataLoading, refreshData } = useData();
     const isEditing = !!id;
+
+    // Optimized lookups
+    const productMap = useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
+    const customerMap = useMemo(() => new Map(customers.map(c => [c.id, c])), [customers]);
+
+    // Barcode optimization
+    const productBySku = useMemo(() => new Map(products.map(p => [p.sku.toLowerCase(), p])), [products]);
+    const productByUpc = useMemo(() => new Map(products.filter(p => p.upc_ean).map(p => [p.upc_ean!, p])), [products]);
 
     // Debug logging
     useEffect(() => {
         console.log("SaleFormPage mounted", { id, user: user?.uid });
     }, [id, user]);
 
-    const [customers, setCustomers] = useState<Customer[]>([]);
-    const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
-    const [products, setProducts] = useState<Product[]>([]);
-    
     const [formState, setFormState] = useState<FormSale>({
         referenceNumber: '',
         date: new Date().toISOString().split('T')[0],
@@ -48,25 +56,24 @@ const SaleFormPage: React.FC = () => {
     const [customerBalance, setCustomerBalance] = useState(0);
     const [customerCredit, setCustomerCredit] = useState(0);
     const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
-    const [paymentMethod, setPaymentMethod] = useState<'Espèces' | 'Mobile Money' | 'Virement bancaire' | 'Compte Avoir'>('Espèces');
+    const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Espèces');
     const [stockErrorModalOpen, setStockErrorModalOpen] = useState(false);
     const [stockErrorMessage, setStockErrorMessage] = useState('');
+    const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
 
     // Gestion du scanner code-barres
     useBarcodeScanner({
         onScan: (barcode) => {
             console.log("Scanned barcode:", barcode);
-            // Chercher le produit correspondant (SKU ou UPC/EAN si disponible, ici on utilise SKU)
-            const product = products.find(p => 
-                p.sku.toLowerCase() === barcode.toLowerCase() || 
-                (p.upc_ean && p.upc_ean === barcode) // Si vous avez un champ UPC/EAN
-            );
+            let product = productBySku.get(barcode.toLowerCase());
+            
+            if (!product) {
+                product = productByUpc.get(barcode);
+            }
 
             if (product) {
                 addProductToSale(product);
-                // Feedback visuel ou sonore optionnel ici
             } else {
-                // Optionnel : Afficher un toast "Produit non trouvé"
                 console.warn("Produit non trouvé pour le code:", barcode);
             }
         },
@@ -74,33 +81,54 @@ const SaleFormPage: React.FC = () => {
     });
 
     useEffect(() => {
-        const fetchData = async () => {
-            setLoading(true);
-            try {
-                const [customersSnap, warehousesSnap, productsSnap, settingsSnap] = await Promise.all([
-                    getDocs(collection(db, "customers")),
-                    getDocs(collection(db, "warehouses")),
-                    getDocs(collection(db, "products")),
-                    getDoc(doc(db, "settings", "app-config"))
-                ]);
+        const initForm = async () => {
+            if (dataLoading) return; // Wait for global data
+
+            if (location.state?.fromQuote) {
+                const quoteData = location.state.fromQuote;
+                setFormState({
+                    referenceNumber: settings?.saleInvoicePrefix ? `${settings.saleInvoicePrefix}${Date.now()}` : `VNT-${Date.now()}`,
+                    date: new Date().toISOString().split('T')[0],
+                    customerId: quoteData.customerId || '',
+                    warehouseId: formState.warehouseId || '', // Keep currently selected or default warehouse
+                    items: quoteData.items.map((item: any) => ({
+                        productId: item.productId,
+                        productName: productMap.get(item.productId)?.name || 'Produit',
+                        quantity: item.quantity,
+                        price: item.price,
+                        subtotal: item.subtotal
+                    })),
+                    grandTotal: quoteData.grandTotal,
+                    paidAmount: 0,
+                    paymentStatus: 'En attente',
+                    saleStatus: 'En attente',
+                    paymentDeadlineDays: 0,
+                    notes: `Converti depuis le devis ${quoteData.referenceNumber}`,
+                });
                 
-                const custList = customersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Customer));
-                setCustomers(custList);
+                const cust = customerMap.get(quoteData.customerId);
+                if (cust) {
+                    setCustomerSearchTerm(cust.name);
+                    setSelectedCustomer(cust);
+                    setCustomerCredit(cust.creditBalance || 0);
+                }
+                setLoading(false);
+                return;
+            }
 
-                const whList = warehousesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Warehouse));
-                setWarehouses(whList);
-
-                setProducts(productsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product)));
-
-                const settings = settingsSnap.exists() ? settingsSnap.data() as AppSettings : null;
-                const prefix = settings?.saleInvoicePrefix || 'VNT-';
-
-                if (isEditing) {
-                    const saleDoc = await getDoc(doc(db, 'sales', id!));
-                    if (saleDoc.exists()) {
-                        const data = saleDoc.data() as FormSale;
+            if (isEditing) {
+                setLoading(true);
+                try {
+                    if (!id) return;
+                    const { data, error: fetchError } = await supabase
+                        .from('sales')
+                        .select('*')
+                        .eq('id', id)
+                        .single();
+                    
+                    if (!fetchError && data) {
                         setFormState(data);
-                        const cust = custList.find(c => c.id === data.customerId);
+                        const cust = customerMap.get(data.customerId);
                         if (cust) {
                             setCustomerSearchTerm(cust.name);
                             setSelectedCustomer(cust);
@@ -109,23 +137,28 @@ const SaleFormPage: React.FC = () => {
                     } else {
                         setError("Vente non trouvée.");
                     }
-                } else {
+                } catch (err) {
+                    setError("Erreur de chargement de la vente.");
+                    console.error(err);
+                } finally {
+                    setLoading(false);
+                }
+            } else {
+                // New sale initialization
+                const prefix = settings?.saleInvoicePrefix || 'VNT-';
+                if (!formState.referenceNumber) {
                     setFormState(prev => ({
                         ...prev,
                         referenceNumber: `${prefix}${Date.now()}`,
                         customerId: '',
                     }));
-                    setCustomerSearchTerm('');
                 }
-            } catch (err) {
-                setError("Erreur de chargement des données.");
-                console.error(err);
-            } finally {
                 setLoading(false);
             }
         };
-        fetchData();
-    }, [id, isEditing]);
+
+        initForm();
+    }, [id, isEditing, dataLoading, customers, settings, customerMap, location.state]);
 
     useEffect(() => {
         const fetchBalance = async () => {
@@ -135,28 +168,34 @@ const SaleFormPage: React.FC = () => {
                 return;
             }
             try {
-                const cust = customers.find(c => c.id === formState.customerId);
+                const cust = customerMap.get(formState.customerId);
                 setCustomerCredit(cust?.creditBalance || 0);
                 let openingBalance = cust?.openingBalance || 0;
 
-                // Récupérer les paiements sur le solde d'ouverture
                 const openingBalanceId = `OPENING_BALANCE_${formState.customerId}`;
-                const paymentsQuery = query(collection(db, "salePayments"), where("saleId", "==", openingBalanceId));
-                const paymentsSnap = await getDocs(paymentsQuery);
-                const paidOpening = paymentsSnap.docs.reduce((sum, doc) => sum + (doc.data().amount || 0), 0);
-
+                const { data: openPayments, error: opError } = await supabase
+                    .from('sale_payments')
+                    .select('amount')
+                    .eq('saleId', openingBalanceId);
+                
+                const paidOpening = (openPayments || []).reduce((sum, p) => sum + (p.amount || 0), 0);
                 let totalUnpaid = Math.max(0, openingBalance - paidOpening);
 
-                const q = query(collection(db, "sales"), where("customerId", "==", formState.customerId));
-                const snap = await getDocs(q);
-                snap.docs.forEach(doc => {
-                    const sale = doc.data() as Sale;
-                    if (id && doc.id === id) return;
-                    totalUnpaid += (sale.grandTotal - (sale.paidAmount || 0));
-                });
+                const { data: salesData, error: sError } = await supabase
+                    .from('sales')
+                    .select('id, grandTotal, paidAmount')
+                    .eq('customerId', formState.customerId);
+                
+                if (salesData) {
+                    salesData.forEach(sale => {
+                        if (id && sale.id === id) return;
+                        totalUnpaid += ((sale.grandTotal || 0) - (sale.paidAmount || 0));
+                    });
+                }
+
                 setCustomerBalance(totalUnpaid);
             } catch (e) {
-                console.warn("Erreur calcul solde client");
+                console.warn("Erreur calcul solde client", e);
             }
         };
         fetchBalance();
@@ -165,7 +204,9 @@ const SaleFormPage: React.FC = () => {
     const userVisibleWarehouses = useMemo(() => {
         if (!user || !user.role) return [];
         if (user.role.name?.toLowerCase().includes('admin')) return warehouses;
-        return warehouses.filter(wh => user.warehouseIds?.includes(wh.id));
+        // Check for warehouseIds on user object (it might be camelCase or not depending on how it was fetched)
+        const userWhIds = (user as any).warehouseIds || [];
+        return warehouses.filter(wh => userWhIds.includes(wh.id));
     }, [user, warehouses]);
 
     useEffect(() => {
@@ -201,7 +242,7 @@ const SaleFormPage: React.FC = () => {
         const item = newItems[index];
 
         if (field === 'quantity') {
-            const product = products.find(p => p.id === item.productId);
+            const product = productMap.get(item.productId);
             if (product && product.type !== 'service') {
                 const stockEntry = product.stockLevels?.find(sl => sl.warehouseId === formState.warehouseId);
                 const availableStock = stockEntry?.quantity || 0;
@@ -222,18 +263,16 @@ const SaleFormPage: React.FC = () => {
         setFormState(prev => {
             const existingItemIndex = prev.items.findIndex(item => item.productId === product.id);
             if (existingItemIndex >= 0) {
-                // Si le produit existe déjà, on incrémente la quantité
                 const newItems = [...prev.items];
                 const item = { ...newItems[existingItemIndex] };
                 
-                // Vérification stock (optionnel ici, mais mieux pour UX immédiate)
                 if (product.type !== 'service') {
                     const stockEntry = product.stockLevels?.find(sl => sl.warehouseId === formState.warehouseId);
                     const availableStock = stockEntry?.quantity || 0;
                     if (item.quantity + 1 > availableStock) {
                         setStockErrorMessage(`Stock insuffisant pour "${product.name}". Disponible: ${availableStock}`);
                         setStockErrorModalOpen(true);
-                        return prev; // Ne rien changer
+                        return prev;
                     }
                 }
 
@@ -242,8 +281,16 @@ const SaleFormPage: React.FC = () => {
                 newItems[existingItemIndex] = item;
                 return { ...prev, items: newItems };
             } else {
-                // Sinon on l'ajoute
-                const newItem: SaleItem = { productId: product.id, quantity: 1, price: product.price || 0, subtotal: product.price || 0 };
+                if (product.type !== 'service') {
+                    const stockEntry = product.stockLevels?.find(sl => sl.warehouseId === formState.warehouseId);
+                    const availableStock = stockEntry?.quantity || 0;
+                    if (availableStock < 1) {
+                        setStockErrorMessage(`Stock insuffisant pour "${product.name}". Disponible: ${availableStock}`);
+                        setStockErrorModalOpen(true);
+                        return prev;
+                    }
+                }
+                const newItem: SaleItem = { productId: product.id, productName: product.name, quantity: 1, price: product.price || 0, subtotal: product.price || 0 };
                 return { ...prev, items: [...prev.items, newItem]};
             }
         });
@@ -252,6 +299,28 @@ const SaleFormPage: React.FC = () => {
 
     const removeProduct = (index: number) => {
         setFormState(prev => ({...prev, items: prev.items.filter((_, i) => i !== index)}));
+    };
+
+    const generateSaleDetails = () => {
+        const items = formState.items.map((item, index) => {
+            const product = productMap.get(item.productId);
+            return (
+                <div key={index} className="flex justify-between text-xs py-1 border-b border-gray-300 dark:border-gray-600">
+                    <span>{product?.name || 'Produit'}</span>
+                    <span className="font-semibold">{item.quantity}x {formatCurrency(item.price)}</span>
+                </div>
+            );
+        });
+        return (
+            <div className="space-y-2">
+                <div className="font-semibold text-xs text-blue-700 dark:text-blue-400 mb-2">Articles de la vente:</div>
+                {items}
+                <div className="flex justify-between text-xs font-bold pt-2 border-t border-gray-400 dark:border-gray-500 mt-2">
+                    <span>Total</span>
+                    <span>{formatCurrency(formState.grandTotal)}</span>
+                </div>
+            </div>
+        );
     };
 
     const handleFormSubmit = async (e: FormEvent) => {
@@ -268,22 +337,26 @@ const SaleFormPage: React.FC = () => {
             }
         }
 
-        // Pré-validation du stock avant la transaction
+        // Pré-validation du stock
         for (const item of formState.items) {
-            const product = products.find(p => p.id === item.productId);
-            if (product && product.type !== 'service') { // Valider le stock uniquement pour les produits physiques
+            const product = productMap.get(item.productId);
+            if (product && product.type !== 'service') {
                 const stockEntry = product.stockLevels?.find(sl => sl.warehouseId === formState.warehouseId);
                 const availableStock = stockEntry?.quantity || 0;
 
                 if (item.quantity > availableStock) {
                     setStockErrorMessage(`Stock insuffisant pour "${product.name}". Disponible: ${availableStock}, Demandé: ${item.quantity}`);
                     setStockErrorModalOpen(true);
-                    return; // Empêcher la soumission du formulaire
+                    return;
                 }
             }
         }
 
-        const finalSaleData: any = { ...formState };
+        const now = new Date();
+        const finalSaleData: any = { 
+            ...formState,
+            date: formState.date.includes('T') ? formState.date : `${formState.date}T${now.toISOString().split('T')[1]}`
+        };
         if (formState.paymentDeadlineDays && formState.paymentDeadlineDays > 0) {
             const dueDate = new Date(formState.date);
             dueDate.setDate(dueDate.getDate() + Number(formState.paymentDeadlineDays));
@@ -293,159 +366,164 @@ const SaleFormPage: React.FC = () => {
         }
 
         try {
-            const stockUpdates = await runTransaction(db, async (transaction) => {
-                const saleRef = isEditing ? doc(db, 'sales', id!) : doc(collection(db, "sales"));
-                
-                // --- PHASE 1 : READS ---
-                const originalSaleDoc = isEditing ? await transaction.get(saleRef) : null;
-                const originalSale = originalSaleDoc?.exists() ? originalSaleDoc.data() as Sale : null;
+            // --- PHASE 1 : GET ORIGINAL SALE IF EDITING ---
+            let originalSale: Sale | null = null;
+            if (isEditing && id) {
+                const { data: fetchOrig } = await supabase.from('sales').select('*').eq('id', id).single();
+                if (fetchOrig) originalSale = fetchOrig as Sale;
+            }
 
-                const allProductIds = Array.from(new Set([
-                    ...finalSaleData.items.map((i: SaleItem) => i.productId),
-                    ...(originalSale?.items.map(i => i.productId) || [])
-                ]));
-                
-                const productSnapshots = await Promise.all(
-                    allProductIds.map(pid => transaction.get(doc(db, 'products', pid)))
-                );
+            // --- PHASE 2 : SAVE SALE ---
+            let saleId = id;
+            if (isEditing && id) {
+                await supabase.from('sales').update(finalSaleData).eq('id', id);
+                addToast('Vente modifiée avec succès', 'success', {
+                    label: 'Voir',
+                    onClick: () => navigate('/sales')
+                }, generateSaleDetails());
+            } else {
+                saleId = crypto.randomUUID();
+                await supabase.from('sales').insert({ ...finalSaleData, id: saleId });
+                addToast('Vente enregistrée avec succès', 'success', {
+                    label: 'Voir',
+                    onClick: () => navigate('/sales')
+                }, generateSaleDetails());
+            }
 
-                // Lecture des données client au début de la transaction
-                let customerSnap: DocumentData | null = null;
-                if (!isEditing && finalSaleData.paidAmount > 0 && user) {
-                    const customerRef = doc(db, "customers", finalSaleData.customerId);
-                    customerSnap = await transaction.get(customerRef);
+            // --- PHASE 3 : UPDATE STOCK ---
+            const wasCompleted = originalSale?.saleStatus === 'Complétée';
+            const isNowCompleted = finalSaleData.saleStatus === 'Complétée';
+
+            const allProductIds = Array.from(new Set([
+                ...finalSaleData.items.map((i: SaleItem) => i.productId),
+                ...(originalSale?.items.map((i: any) => i.productId) || [])
+            ]));
+
+            const { data: currentProducts } = await supabase.from('products').select('*').in('id', allProductIds);
+
+            for (const productId of allProductIds) {
+                const productData = (currentProducts || []).find(p => p.id === productId);
+                if (!productData || productData.type === 'service') continue;
+
+                let stockLevels = [...(productData.stockLevels || [])];
+                const newItem = finalSaleData.items.find((i: SaleItem) => i.productId === productId);
+                const originalItem = originalSale?.items.find((i: any) => i.productId === productId);
+                let stockChanged = false;
+
+                // 1. Restore stock if editing and it was previously deducted
+                if (isEditing && wasCompleted && originalItem) {
+                    const whIdx = stockLevels.findIndex((sl: any) => sl.warehouseId === originalSale!.warehouseId);
+                    if (whIdx > -1) {
+                        stockLevels[whIdx].quantity += originalItem.quantity;
+                        stockChanged = true;
+                    }
                 }
 
-                // --- PHASE 2 : LOGIC & CALCULATIONS ---
-                const wasCompleted = originalSale?.saleStatus === 'Complétée';
-                const isNowCompleted = finalSaleData.saleStatus === 'Complétée';
-                const stockUpdates: { ref: DocumentReference, newStockLevels: any[] }[] = [];
+                // 2. Deduct stock if new item exists (regardless of sale status - immediate stock deduction)
+                if (newItem && !isEditing) {
+                    // For new sales, always deduct stock immediately
+                    const whIdx = stockLevels.findIndex((sl: any) => sl.warehouseId === finalSaleData.warehouseId);
+                    if (whIdx > -1) {
+                        stockLevels[whIdx].quantity -= newItem.quantity;
+                        stockChanged = true;
+                        console.log(`Deducting stock for new sale - Product: ${productId}, Quantity: ${newItem.quantity}, New Level: ${stockLevels[whIdx].quantity}`);
+                    }
+                } else if (newItem && isEditing && isNowCompleted) {
+                    // For editing, only deduct if now marked as completed
+                    const whIdx = stockLevels.findIndex((sl: any) => sl.warehouseId === finalSaleData.warehouseId);
+                    if (whIdx > -1 && !wasCompleted) {
+                        // Only deduct if it wasn't completed before
+                        stockLevels[whIdx].quantity -= newItem.quantity;
+                        stockChanged = true;
+                        console.log(`Deducting stock for edited completed sale - Product: ${productId}, Quantity: ${newItem.quantity}`);
+                    }
+                }
 
-                // Mettre à jour le stock pour les nouvelles ventes ou les ventes complétées
-                if (!isEditing || wasCompleted || isNowCompleted) {
-                    allProductIds.forEach((productId, idx) => {
-                        const productSnap = productSnapshots[idx];
-                        if (!productSnap.exists()) return;
-                        
-                        const productData = productSnap.data() as Product;
-                        if (productData.type === 'service') return;
+                if (stockChanged) {
+                    await supabase.from('products').update({ stockLevels }).eq('id', productId);
+                }
+            }
 
-                        let stockLevels = [...(productData.stockLevels || [])];
-                        const newItem = finalSaleData.items.find((i: SaleItem) => i.productId === productId);
-                        const originalItem = originalSale?.items.find(i => i.productId === productId);
+            // --- PHASE 4 : HANDLE PAYMENTS ---
+            if (!isEditing && finalSaleData.paidAmount > 0 && user) {
+                let currentCredit = 0;
+                const { data: custData } = await supabase.from('customers').select('creditBalance').eq('id', finalSaleData.customerId).single();
+                if (custData) currentCredit = custData.creditBalance || 0;
 
-                        // 1. Recharger le stock si c'était complété avant (pour les modifications)
-                        if (isEditing && wasCompleted && originalItem) {
-                            const whIdx = stockLevels.findIndex(sl => sl.warehouseId === originalSale!.warehouseId);
-                            if (whIdx > -1) stockLevels[whIdx].quantity += originalItem.quantity;
-                        }
+                let paymentAmount = finalSaleData.paidAmount;
+                let finalPaymentMethod = paymentMethod || 'Espèces';
+                let usedCredit = 0;
 
-                        // 2. Déduire le stock pour les nouvelles ventes ou les ventes modifiées/complétées
-                        if ((!isEditing || isNowCompleted || (isEditing && newItem && originalItem && newItem.quantity !== originalItem.quantity)) && newItem) {
-                            const whIdx = stockLevels.findIndex(sl => sl.warehouseId === finalSaleData.warehouseId);
-                            
-                            // VERIFICATION DU STOCK
-                            if (whIdx === -1 || stockLevels[whIdx].quantity < newItem.quantity) {
-                                throw new Error(`Stock insuffisant pour "${productData.name}". Disponible: ${whIdx > -1 ? stockLevels[whIdx].quantity : 0}, Demandé: ${newItem.quantity}`);
-                            }
+                if (finalPaymentMethod === 'Compte Avoir' && currentCredit > 0) {
+                     usedCredit = Math.min(paymentAmount, currentCredit);
+                     currentCredit -= usedCredit;
+                }
 
-                            if (whIdx > -1) {
-                                stockLevels[whIdx].quantity -= newItem.quantity;
-                            }
-                        }
-
-                        stockUpdates.push({ ref: doc(db, 'products', productId), newStockLevels: stockLevels });
+                if (paymentAmount > 0) {
+                    const paymentId = crypto.randomUUID();
+                    await supabase.from('sale_payments').insert({
+                        id: paymentId,
+                        saleId: saleId,
+                        customerId: finalSaleData.customerId,
+                        date: new Date().toISOString(),
+                        amount: paymentAmount,
+                        method: finalPaymentMethod,
+                        createdByUserId: user.uid,
+                        notes: 'Paiement initial à la vente'
                     });
                 }
 
-                // --- PHASE 3 : WRITES ---
-                stockUpdates.forEach(update => {
-                    transaction.update(update.ref, { stockLevels: update.newStockLevels });
-                });
-
-                // Gestion du paiement avec crédit client
-                if (!isEditing && finalSaleData.paidAmount > 0 && user) {
-                    // const customerRef = doc(db, "customers", finalSaleData.customerId); // Moved to PHASE 1
-                    // const customerSnap = await transaction.get(customerRef); // Moved to PHASE 1
-                    let currentCredit = 0;
-                    
-                    if (customerSnap && customerSnap.exists()) {
-                        const customerData = customerSnap.data() as Customer;
-                        currentCredit = customerData.creditBalance || 0;
-                    }
-
-                    let paymentAmount = finalSaleData.paidAmount;
-                    let finalPaymentMethod = paymentMethod || 'Espèces';
-                    let usedCredit = 0;
-
-                    // Si paiement par crédit et crédit disponible
-                    if (finalPaymentMethod === 'Compte Avoir' && currentCredit > 0) {
-                        if (paymentAmount > currentCredit) {
-                            throw new Error(`Crédit insuffisant. Disponible: ${formatCurrency(currentCredit)}`);
-                        }
-                        usedCredit = paymentAmount;
-                        currentCredit -= usedCredit;
-                    }
-
-                    if (paymentAmount > 0) {
-                        const paymentRef = doc(collection(db, "salePayments"));
-                        transaction.set(paymentRef, {
-                            saleId: saleRef.id,
-                            customerId: finalSaleData.customerId,
-                            date: new Date().toISOString(),
-                            amount: paymentAmount,
-                            method: finalPaymentMethod,
-                            createdByUserId: user.uid,
-                            note: 'Paiement initial à la vente'
-                        });
-                    }
-
-                    // Mise à jour du crédit client si utilisé
-                    if (usedCredit > 0) {
-                        transaction.update(customerRef, { creditBalance: currentCredit });
-                    }
-                } else if (isEditing && originalSale && finalSaleData.paidAmount !== originalSale.paidAmount && user) {
-                    const diff = finalSaleData.paidAmount - originalSale.paidAmount;
-                    if (diff !== 0) {
-                        transaction.set(doc(collection(db, "salePayments")), {
-                            saleId: saleRef.id,
-                            date: new Date().toISOString(),
-                            amount: diff,
-                            method: paymentMethod,
-                            createdByUserId: user.uid,
-                            note: 'Ajustement manuel du montant payé sur facture'
-                        });
-                    }
+                if (usedCredit > 0) {
+                    await supabase.from('customers').update({ creditBalance: currentCredit }).eq('id', finalSaleData.customerId);
                 }
 
-                if (isEditing) transaction.update(saleRef, finalSaleData);
-                else transaction.set(saleRef, finalSaleData);
-
-                return stockUpdates;
-            });
-            // Mettre à jour l'état local des produits pour refléter les changements de stock
-            const updatedProducts = [...products];
-            stockUpdates.forEach(update => {
-                const productIndex = updatedProducts.findIndex(p => p.id === update.ref.id);
-                if (productIndex !== -1) {
-                    updatedProducts[productIndex] = {
-                        ...updatedProducts[productIndex],
-                        stockLevels: update.newStockLevels
-                    };
+            } else if (isEditing && originalSale && finalSaleData.paidAmount !== originalSale.paidAmount && user && saleId) {
+                const diff = finalSaleData.paidAmount - originalSale.paidAmount;
+                if (diff !== 0) {
+                    const paymentId = crypto.randomUUID();
+                    await supabase.from('sale_payments').insert({
+                        id: paymentId,
+                        saleId: saleId,
+                        customerId: finalSaleData.customerId,
+                        date: new Date().toISOString(),
+                        amount: diff,
+                        method: paymentMethod || 'Espèces',
+                        createdByUserId: user.uid,
+                        notes: 'Ajustement manuel du montant payé sur facture'
+                    });
                 }
-            });
-            setProducts(updatedProducts);
+            }
+
+            // --- PHASE 5 : UPDATE QUOTE STATUS IF CONVERTED ---
+            if (location.state?.fromQuote?.id) {
+                await supabase
+                    .from('quotes')
+                    .update({ 
+                        status: 'Converti',
+                        convertedSaleId: saleId 
+                    })
+                    .eq('id', location.state.fromQuote.id);
+            }
+
+            // Rafraîchir les produits
+            console.log("🔄 Refreshing products after sale save...");
+            await refreshData(['products', 'sales', 'customers']);
+            console.log("✓ Products refreshed successfully");
             
-            // Rafraîchir les données des produits pour s'assurer que l'affichage est à jour
-            await fetchProducts();
+            setTimeout(() => {
+                navigate('/sales');
+            }, 500);
             
-            navigate('/sales');
         } catch (err: any) {
-            if (err.message && err.message.includes("Stock insuffisant")) {
-                setStockErrorMessage(err.message);
+            console.error("Error saving sale:", err);
+            const errorMessage = err.message || 'Une erreur est survenue';
+            
+            if (errorMessage.includes("Stock insuffisant")) {
+                setStockErrorMessage(errorMessage);
                 setStockErrorModalOpen(true);
             } else {
-                setError(`Erreur: ${err.message}`);
+                setError(errorMessage);
+                addToast(errorMessage, 'error');
             }
         }
     };
@@ -455,28 +533,33 @@ const SaleFormPage: React.FC = () => {
         return products.filter(p => p.name.toLowerCase().includes(productSearch.toLowerCase()) || p.sku.toLowerCase().includes(productSearch.toLowerCase())).slice(0, 5);
     }, [productSearch, products]);
     
+    const activeCustomers = useMemo(() => {
+        return customers.filter(c => !c.isArchived);
+    }, [customers]);
+
     const filteredCustomers = useMemo(() => {
         if (!customerSearchTerm) return [];
-        return customers.filter(c => c.name.toLowerCase().includes(customerSearchTerm.toLowerCase())).slice(0, 5);
-    }, [customerSearchTerm, customers]);
-
-    // Fonction pour rafraîchir les données des produits
-    const fetchProducts = async () => {
-        try {
-            const productsSnap = await getDocs(collection(db, "products"));
-            setProducts(productsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product)));
-        } catch (err) {
-            console.error("Erreur lors du rafraîchissement des produits:", err);
-        }
-    };
+        return activeCustomers.filter(c => c.name.toLowerCase().includes(customerSearchTerm.toLowerCase())).slice(0, 5);
+    }, [customerSearchTerm, activeCustomers]);
 
     const handleQuickAddCustomer = () => {
-        navigate('/customers/new', { state: { returnTo: location.pathname } });
+        setIsCustomerModalOpen(true);
+    };
+
+    const handleCustomerCreated = async (customer: Customer) => {
+        // Mise à jour immédiate de l'interface (Optimistic UI)
+        setFormState(prev => ({ ...prev, customerId: customer.id }));
+        setCustomerSearchTerm(customer.name);
+        setSelectedCustomer(customer);
+        setIsCustomerModalOpen(false);
+
+        // Rafraîchissement des données en arrière-plan
+        await refreshData(['customers']);
     };
 
     const getProductName = (productId: string) => {
         try {
-            return products.find(p => p.id === productId)?.name || 'Produit inconnu';
+            return productMap.get(productId)?.name || 'Produit inconnu';
         } catch (e) { return 'Erreur produit'; }
     };
 
@@ -495,7 +578,7 @@ const SaleFormPage: React.FC = () => {
                 {error && <div className="p-3 my-2 text-sm text-red-700 bg-red-100 rounded-md dark:bg-red-900/40 dark:text-red-300 font-bold text-center border border-red-200">{error}</div>}
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-                    <div><label className="block text-xs font-black uppercase text-gray-400">Date</label><input type="date" name="date" value={formState.date} onChange={handleFormChange} required className={inputFormClasses}/></div>
+                    <div><label className="block text-xs font-black uppercase text-gray-400">Date</label><input type="date" name="date" value={formState.date ? formState.date.split('T')[0] : ''} onChange={handleFormChange} required className={inputFormClasses}/></div>
                     <div><label className="block text-xs font-black uppercase text-gray-400">Réf. Vente</label><input type="text" name="referenceNumber" value={formState.referenceNumber} onChange={handleFormChange} required className={inputFormClasses}/></div>
                     <div className="relative">
                         <label className="block text-xs font-black uppercase text-gray-400">Client</label>
@@ -651,6 +734,12 @@ const SaleFormPage: React.FC = () => {
                     </button>
                 </div>
             </Modal>
+            
+            <QuickCustomerModal 
+                isOpen={isCustomerModalOpen} 
+                onClose={() => setIsCustomerModalOpen(false)} 
+                onSuccess={handleCustomerCreated}
+            />
         </div>
     );
 };

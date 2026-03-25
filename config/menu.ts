@@ -2,7 +2,7 @@
 import React from 'react';
 import {
     DashboardIcon, PosIcon, ProductsIcon, InventoryIcon, OrdersIcon, CustomersIcon, ReportsIcon,
-    UsersIcon, RolesIcon, SettingsIcon, WarehouseIcon, TransferIcon, SuppliersIcon, BrandIcon, CategoryIcon, UnitIcon, PurchaseIcon, PaymentIcon, DocumentTextIcon, BankIcon, QuoteIcon
+    UsersIcon, RolesIcon, SettingsIcon, WarehouseIcon, TransferIcon, SuppliersIcon, BrandIcon, CategoryIcon, UnitIcon, PurchaseIcon, PaymentIcon, DocumentTextIcon, BankIcon, QuoteIcon, ExpenseIcon
 } from '../constants';
 
 interface MenuItem {
@@ -23,23 +23,36 @@ export const menuConfig: MenuGroup[] = [
     colorClass: 'text-green-400',
     items: [
       { to: 'dashboard', icon: React.createElement(DashboardIcon), text: 'Tableau de bord' },
-      { to: 'pos', icon: React.createElement(PosIcon), text: 'Point de Vente (POS)' },
     ],
   },
   {
-    title: 'Gestion',
+    title: 'Vente & Caisse',
+    colorClass: 'text-orange-400',
+    items: [
+      { to: 'pos', icon: React.createElement(PosIcon), text: 'Point de Vente (POS)' },
+      { to: 'sales', icon: React.createElement(OrdersIcon), text: 'Historique Ventes' },
+      { to: 'quotes', icon: React.createElement(QuoteIcon), text: 'Devis' },
+      { to: 'credit-notes', icon: React.createElement(DocumentTextIcon), text: 'Avoirs Clients' },
+    ],
+  },
+  {
+    title: 'Stock & Produits',
     colorClass: 'text-blue-400',
     items: [
-      { to: 'sales', icon: React.createElement(OrdersIcon), text: 'Ventes' },
-      { to: 'quotes', icon: React.createElement(QuoteIcon), text: 'Devis' },
       { to: 'products', icon: React.createElement(ProductsIcon), text: 'Produits' },
-      { to: 'inventory', icon: React.createElement(InventoryIcon), text: 'Stocks' },
-      { to: 'purchases', icon: React.createElement(PurchaseIcon), text: 'Achats' },
+      { to: 'inventory', icon: React.createElement(InventoryIcon), text: 'Niveaux Stock' },
       { to: 'transfers', icon: React.createElement(TransferIcon), text: 'Transferts' },
+      { to: 'purchases', icon: React.createElement(PurchaseIcon), text: 'Achats / Entrées' },
+      { to: 'supplier-credit-notes', icon: React.createElement(DocumentTextIcon), text: 'Retours Fournisseurs' },
+    ],
+  },
+  {
+    title: 'Finances',
+    colorClass: 'text-purple-400',
+    items: [
       { to: 'payments', icon: React.createElement(PaymentIcon), text: 'Règlements' },
+      { to: 'expenses', icon: React.createElement(ExpenseIcon), text: 'Dépenses' },
       { to: 'bank', icon: React.createElement(BankIcon), text: 'Banque' },
-      { to: 'credit-notes', icon: React.createElement(DocumentTextIcon), text: 'Avoirs Clients' },
-      { to: 'supplier-credit-notes', icon: React.createElement(DocumentTextIcon), text: 'Avoirs Fournisseurs' },
     ],
   },
   {

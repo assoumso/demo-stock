@@ -1,14 +1,22 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { db } from '../firebase';
-import { collection, query, orderBy, limit, onSnapshot, where, doc } from 'firebase/firestore';
+import { supabase } from '../supabase';
 import { Product, Sale, Purchase, WarehouseTransfer, StockAdjustment, CreditNote, SupplierCreditNote, AppSettings } from '../types';
-import { DownloadIcon, PrintIcon, ArrowLeftIcon, TrendingUpIcon, TrendingDownIcon, DollarSignIcon, PackageIcon, DocumentTextIcon, SearchIcon } from '../constants';
+import { DownloadIcon, PrintIcon, ArrowLeftIcon, TrendingUpIcon, TrendingDownIcon, PackageIcon, DocumentTextIcon, SearchIcon } from '../constants';
 import { useReactToPrint } from 'react-to-print';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { useData } from '../context/DataContext';
+
+/**
+ * Convertit une date Firestore (Timestamp ou string ISO) en objet Date JS valide.
+ */
+const parseFirestoreDate = (dateField: any): Date => {
+    if (!dateField) return new Date(0);
+    const d = new Date(dateField);
+    return isNaN(d.getTime()) ? new Date(0) : d;
+};
 
 interface HistoryItem {
     type: 'Vente' | 'Achat' | 'Transfert (Entrant)' | 'Transfert (Sortant)' | 'Ajustement' | 'Retour Vente' | 'Retour Achat' | 'Stock Initial';
@@ -25,12 +33,13 @@ interface HistoryItem {
 const ProductHistoryPage: React.FC = () => {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
-    const { products, categories, brands, suppliers, warehouses, customers } = useData();
+    const { products, categories, brands, suppliers, warehouses, customers, units } = useData();
     
     const [product, setProduct] = useState<Product | null>(null);
     const [loading, setLoading] = useState(true);
     const [history, setHistory] = useState<HistoryItem[]>([]);
     const [settings, setSettings] = useState<AppSettings | null>(null);
+    const [fetchError, setFetchError] = useState<string | null>(null);
     const printRef = useRef<HTMLDivElement>(null);
 
     // Filters State
@@ -39,6 +48,11 @@ const ProductHistoryPage: React.FC = () => {
     const [selectedWarehouseId, setSelectedWarehouseId] = useState<string>('all');
     const [warehouseSearch, setWarehouseSearch] = useState('');
     const [showWarehouseDropdown, setShowWarehouseDropdown] = useState(false);
+
+    const unitName = useMemo(() => {
+        if (!product || !product.unitId) return '';
+        return units.find(u => u.id === product.unitId)?.name || '';
+    }, [product, units]);
 
     // Filtered Options
     const filteredProducts = useMemo(() => {
@@ -81,31 +95,44 @@ const ProductHistoryPage: React.FC = () => {
         totalPurchaseReturn: 0,
         transferOut: 0,
         totalRevenue: 0,
-        estimatedProfit: 0
+        estimatedProfit: 0,
+        netSoldQuantity: 0,
+        totalPhysicalIncoming: 0,
+        totalPhysicalOutgoing: 0
     });
 
     const handlePrint = useReactToPrint({
-        content: () => printRef.current,
+        contentRef: printRef,
         documentTitle: `Historique_Stock_${product?.name || 'Produit'}`
     });
 
-    // 1. Get Product from Context or Listener
+    // 1. Get Product from Context or Supabase
     useEffect(() => {
         if (id) {
-            const unsub = onSnapshot(doc(db, "products", id), (doc) => {
-                if (doc.exists()) {
-                    const prodData = { id: doc.id, ...doc.data() } as Product;
-                    setProduct(prodData);
-                    setProductSearch(`${prodData.name} - ${prodData.sku}`);
-                } else {
-                    const found = products.find(p => p.id === id);
-                    if (found) {
-                        setProduct(found);
-                        setProductSearch(`${found.name} - ${found.sku}`);
-                    }
+            const fetchProduct = async () => {
+                // Try context first
+                const found = products.find(p => p.id === id);
+                if (found) {
+                    setProduct(found);
+                    setProductSearch(`${found.name} - ${found.sku}`);
+                    return;
                 }
-            });
-            return () => unsub();
+                // Fallback to Supabase
+                try {
+                    const { data, error } = await supabase
+                        .from('products')
+                        .select('*')
+                        .eq('id', id)
+                        .single();
+                    if (data && !error) {
+                        setProduct(data as Product);
+                        setProductSearch(`${data.name} - ${data.sku}`);
+                    }
+                } catch (e) {
+                    console.error("Error fetching product:", e);
+                }
+            };
+            fetchProduct();
         }
     }, [id, products]);
 
@@ -119,46 +146,70 @@ const ProductHistoryPage: React.FC = () => {
 
     // 2. Fetch App Settings
     useEffect(() => {
-        const unsub = onSnapshot(collection(db, "appSettings"), (snap) => {
-            if (!snap.empty) setSettings({ id: snap.docs[0].id, ...snap.docs[0].data() } as AppSettings);
-        });
-        return () => unsub();
+        const fetchSettings = async () => {
+            try {
+                const { data, error } = await supabase
+                    .from('app_settings')
+                    .select('*')
+                    .eq('id', 'app-config')
+                    .single();
+                if (data && !error) setSettings(data as AppSettings);
+            } catch (e) {
+                console.error("Error fetching settings:", e);
+            }
+        };
+        fetchSettings();
     }, []);
 
-    // 3. Real-time Listeners for Movements
+    // 3. Fetch All Movements from Supabase
     useEffect(() => {
         if (!id) return;
         setLoading(true);
-        // Increased limit to capture more history and better opening stock calculation
-        const LIMIT = 2000;
+        setFetchError(null);
+        
+        const fetchData = async () => {
+            const errors: string[] = [];
+            try {
+                // Parallel fetch of all collections
+                const [salesRes, purchasesRes, transfersRes, adjustmentsRes, cnRes, scnRes] = await Promise.all([
+                    supabase.from('sales').select('*'),
+                    supabase.from('purchases').select('*'),
+                    supabase.from('warehouse_transfers').select('*'),
+                    supabase.from('stock_adjustments').select('*').eq('productId', id),
+                    supabase.from('credit_notes').select('*'),
+                    supabase.from('supplier_credit_notes').select('*')
+                ]);
 
-        const qSales = query(collection(db, "sales"), orderBy("date", "desc"), limit(LIMIT));
-        const unsubSales = onSnapshot(qSales, (snap) => setRawSales(snap.docs.map(d => ({id: d.id, ...d.data()} as Sale))));
+                if (salesRes.error) errors.push(`Ventes: ${salesRes.error.message}`);
+                if (purchasesRes.error) errors.push(`Achats: ${purchasesRes.error.message}`);
+                if (transfersRes.error) errors.push(`Transferts: ${transfersRes.error.message}`);
+                if (adjustmentsRes.error) errors.push(`Ajustements: ${adjustmentsRes.error.message}`);
+                if (cnRes.error) errors.push(`Avoirs clients: ${cnRes.error.message}`);
+                if (scnRes.error) errors.push(`Avoirs fournisseurs: ${scnRes.error.message}`);
 
-        const qPurchases = query(collection(db, "purchases"), orderBy("date", "desc"), limit(LIMIT));
-        const unsubPurchases = onSnapshot(qPurchases, (snap) => setRawPurchases(snap.docs.map(d => ({id: d.id, ...d.data()} as Purchase))));
+                if (errors.length > 0) {
+                    setFetchError(`Erreurs lors du chargement: ${errors.join(', ')}`);
+                }
 
-        const qTransfers = query(collection(db, "warehouseTransfers"), orderBy("date", "desc"), limit(LIMIT));
-        const unsubTransfers = onSnapshot(qTransfers, (snap) => setRawTransfers(snap.docs.map(d => ({id: d.id, ...d.data()} as WarehouseTransfer))));
+                setRawSales((salesRes.data || []) as Sale[]);
+                setRawPurchases((purchasesRes.data || []) as Purchase[]);
+                setRawTransfers((transfersRes.data || []) as WarehouseTransfer[]);
+                setRawAdjustments((adjustmentsRes.data || []) as StockAdjustment[]);
+                setRawCreditNotes((cnRes.data || []) as CreditNote[]);
+                setRawSupplierCreditNotes((scnRes.data || []) as SupplierCreditNote[]);
 
-        const qAdjustments = query(collection(db, "stockAdjustments"), where("productId", "==", id), orderBy("date", "desc"), limit(LIMIT));
-        const unsubAdjustments = onSnapshot(qAdjustments, (snap) => setRawAdjustments(snap.docs.map(d => ({id: d.id, ...d.data()} as StockAdjustment))));
-
-        const qCreditNotes = query(collection(db, "creditNotes"), orderBy("date", "desc"), limit(LIMIT));
-        const unsubCreditNotes = onSnapshot(qCreditNotes, (snap) => setRawCreditNotes(snap.docs.map(d => ({id: d.id, ...d.data()} as CreditNote))));
-
-        const qSupplierCreditNotes = query(collection(db, "supplierCreditNotes"), orderBy("date", "desc"), limit(LIMIT));
-        const unsubSupplierCreditNotes = onSnapshot(qSupplierCreditNotes, (snap) => setRawSupplierCreditNotes(snap.docs.map(d => ({id: d.id, ...d.data()} as SupplierCreditNote))));
-
-        const timer = setTimeout(() => setLoading(false), 1500);
-
-        return () => {
-            unsubSales(); unsubPurchases(); unsubTransfers(); unsubAdjustments(); unsubCreditNotes(); unsubSupplierCreditNotes();
-            clearTimeout(timer);
+            } catch (error: any) {
+                console.error("Error fetching history:", error);
+                setFetchError(`Erreur générale: ${error.message}`);
+            } finally {
+                setLoading(false);
+            }
         };
+
+        fetchData();
     }, [id]);
 
-    // 4. Process Data & Calculate Stats
+    // 4. Process Data & Calculate Stats (runs after raw data is set)
     useEffect(() => {
         if (!product || !id) return;
 
@@ -175,59 +226,81 @@ const ProductHistoryPage: React.FC = () => {
 
         const rawHistory: HistoryItem[] = [];
 
-        // Sales
-        rawSales.forEach(sale => {
-            // Filter by Warehouse if selected
-            if (selectedWarehouseId !== 'all' && sale.warehouseId !== selectedWarehouseId) return;
+        // Helper: find matching items in a list
+        const findItems = (items: any[]): any[] => {
+            if (!Array.isArray(items)) return [];
+            return items.filter((i: any) => {
+                if (!i) return false;
+                const pid = i.productId || i.product_id || (i.product && i.product.id) || i.id;
+                return pid === id;
+            });
+        };
 
-            const item = sale.items?.find(i => i.productId === id);
-            if (item) {
+        // --- SALES ---
+        rawSales.forEach(sale => {
+            if (selectedWarehouseId !== 'all' && sale.warehouseId && sale.warehouseId !== selectedWarehouseId) return;
+
+            const items = findItems(Array.isArray(sale.items) ? sale.items : []);
+            
+            items.forEach(item => {
                 const customer = customers.find(c => c.id === sale.customerId);
+                const qty = Number(item.quantity) || 0;
+                if (qty === 0) return;
                 rawHistory.push({
                     type: 'Vente',
                     date: sale.date,
-                    reference: sale.referenceNumber,
-                    quantityChange: -item.quantity,
-                    partner: customer ? customer.name : 'client de passage',
-                    unitPrice: item.price,
-                    totalPrice: item.subtotal
+                    reference: sale.referenceNumber || sale.id,
+                    quantityChange: -qty,
+                    partner: customer
+                        ? customer.name
+                        : (sale.customerId === 'passage' ? 'Client de passage' : 'Client inconnu'),
+                    warehouseName: warehouses.find(w => w.id === sale.warehouseId)?.name,
+                    unitPrice: Number(item.price) || 0,
+                    totalPrice: Number(item.subtotal) || 0
                 });
-                totalSold += item.quantity;
-                totalRevenue += item.subtotal;
-            }
+                totalSold += qty;
+                totalRevenue += (Number(item.subtotal) || 0);
+            });
         });
 
-        // Purchases
+        // --- PURCHASES ---
         rawPurchases.forEach(purchase => {
-            // Filter by Warehouse if selected
-            if (selectedWarehouseId !== 'all' && purchase.warehouseId !== selectedWarehouseId) return;
+            if (selectedWarehouseId !== 'all' && purchase.warehouseId && purchase.warehouseId !== selectedWarehouseId) return;
 
-            if (purchase.purchaseStatus === 'Reçu') {
-                const item = purchase.items?.find(i => i.productId === id);
-                if (item) {
+            // Include all received purchases, or those without status (legacy)
+            if (purchase.purchaseStatus === 'Reçu' || !purchase.purchaseStatus) {
+                const items = findItems(Array.isArray(purchase.items) ? purchase.items : []);
+                
+                items.forEach(item => {
                     const supplier = suppliers.find(s => s.id === purchase.supplierId);
+                    const qty = Number(item.quantity) || 0;
+                    if (qty === 0) return;
+                    const itemCost = Number((item as any).cost ?? (item as any).price) || 0;
                     rawHistory.push({
                         type: 'Achat',
                         date: purchase.date,
-                        reference: purchase.referenceNumber,
-                        quantityChange: item.quantity,
+                        reference: purchase.referenceNumber || purchase.id,
+                        quantityChange: qty,
                         partner: supplier ? supplier.name : 'Fournisseur inconnu',
-                        unitPrice: item.cost,
-                        totalPrice: item.subtotal
+                        warehouseName: warehouses.find(w => w.id === purchase.warehouseId)?.name,
+                        unitPrice: itemCost,
+                        totalPrice: qty * itemCost
                     });
-                    totalPurchase += item.quantity;
-                }
+                    totalPurchase += qty;
+                });
             }
         });
 
-        // Transfers
+        // --- TRANSFERS ---
         rawTransfers.forEach(transfer => {
             let qty = 0;
             if (transfer.items && Array.isArray(transfer.items)) {
-                const item = transfer.items.find(i => i.productId === id);
-                if (item) qty = item.quantity;
+                const items = findItems(transfer.items);
+                items.forEach(trItem => {
+                    qty += Number(trItem.quantity) || 0;
+                });
             } else if (transfer.productId === id) {
-                qty = transfer.quantity || 0;
+                qty = Number(transfer.quantity) || 0;
             }
 
             if (qty > 0) {
@@ -241,7 +314,7 @@ const ProductHistoryPage: React.FC = () => {
                         date: transfer.date,
                         reference: transfer.id,
                         quantityChange: -qty,
-                        partner: '-',
+                        partner: `→ ${toName}`,
                         warehouseName: fromName
                     });
                     transferOut += qty;
@@ -254,7 +327,7 @@ const ProductHistoryPage: React.FC = () => {
                         date: transfer.date,
                         reference: transfer.id,
                         quantityChange: qty,
-                        partner: '-',
+                        partner: `← ${fromName}`,
                         warehouseName: toName
                     });
                     transferIn += qty;
@@ -262,132 +335,143 @@ const ProductHistoryPage: React.FC = () => {
             }
         });
 
-        // Adjustments
+        // --- ADJUSTMENTS ---
         rawAdjustments.forEach(adj => {
-             // Filter by Warehouse if selected
-             if (selectedWarehouseId !== 'all' && adj.warehouseId !== selectedWarehouseId) return;
+            if (selectedWarehouseId !== 'all' && adj.warehouseId !== selectedWarehouseId) return;
 
-            const change = adj.type === 'addition' ? adj.quantity : -adj.quantity;
-            const reason = adj.reason?.toLowerCase() || '';
-            const isInitial = reason.includes('initial') || reason.includes('ouverture') || reason.includes('inventaire') || reason.includes('départ');
+            const change = adj.type === 'addition' ? Number(adj.quantity) : -Number(adj.quantity);
+            const reason = (adj.reason || '').toLowerCase();
+            const isInitial = reason.includes('initial') || reason.includes('ouverture') || reason.includes('inventaire') || reason.includes('départ') || reason.includes('report') || reason.includes('solde');
             
             rawHistory.push({
                 type: isInitial ? 'Stock Initial' : 'Ajustement',
                 date: adj.date,
-                reference: 'AJUSTEMENT',
+                reference: isInitial ? 'STOCK_INITIAL' : `AJUST-${adj.id.slice(0, 6).toUpperCase()}`,
                 quantityChange: change,
-                partner: '-',
+                partner: adj.reason || '-',
                 warehouseName: warehouses.find(w => w.id === adj.warehouseId)?.name
             });
             
             if (isInitial) {
                 totalInitialStock += change;
             } else {
-                if (change > 0) {
-                    adjustmentIn += change;
-                } else {
-                    adjustmentOut += Math.abs(change);
-                }
+                if (change > 0) adjustmentIn += change;
+                else adjustmentOut += Math.abs(change);
             }
         });
 
-        // Credit Notes (Returns)
+        // --- CREDIT NOTES (Retours Clients) ---
         rawCreditNotes.forEach(cn => {
-            // Filter by Warehouse if selected (assuming CN has warehouseId, if not, might need logic adjustment)
-            // For now assuming sales logic covers most, but strictly CN usually returns to a warehouse
-             if (selectedWarehouseId !== 'all' && cn.warehouseId !== selectedWarehouseId) return;
+            if (selectedWarehouseId !== 'all' && cn.warehouseId && cn.warehouseId !== selectedWarehouseId) return;
 
-            const item = cn.items?.find(i => i.productId === id);
-            if (item) {
+            const items = findItems(Array.isArray(cn.items) ? cn.items : []);
+            
+            items.forEach(item => {
                 const customer = customers.find(c => c.id === cn.customerId);
+                const qty = Number(item.quantity) || 0;
+                if (qty === 0) return;
                 rawHistory.push({
                     type: 'Retour Vente',
                     date: cn.date,
-                    reference: cn.referenceNumber,
-                    quantityChange: item.quantity,
-                    partner: customer ? customer.name : 'Client inconnu'
+                    reference: cn.referenceNumber || cn.id,
+                    quantityChange: qty,
+                    partner: customer ? customer.name : 'Client inconnu',
+                    unitPrice: Number((item as any).price || (item as any).cost) || 0,
+                    totalPrice: Number(item.subtotal) || 0
                 });
-                totalSellReturn += item.quantity;
-            }
+                totalSellReturn += qty;
+            });
         });
 
-        // Supplier Credit Notes (Returns)
+        // --- SUPPLIER CREDIT NOTES (Retours Fournisseurs) ---
         rawSupplierCreditNotes.forEach(scn => {
-            // Filter by Warehouse if selected
-             if (selectedWarehouseId !== 'all' && scn.warehouseId !== selectedWarehouseId) return;
+            if (selectedWarehouseId !== 'all' && scn.warehouseId && scn.warehouseId !== selectedWarehouseId) return;
 
-            const item = scn.items?.find(i => i.productId === id);
-            if (item) {
+            const items = findItems(Array.isArray(scn.items) ? scn.items : []);
+
+            items.forEach(item => {
                 const supplier = suppliers.find(s => s.id === scn.supplierId);
+                const qty = Number(item.quantity) || 0;
+                if (qty === 0) return;
                 rawHistory.push({
                     type: 'Retour Achat',
                     date: scn.date,
-                    reference: scn.referenceNumber,
-                    quantityChange: -item.quantity,
-                    partner: supplier ? supplier.name : 'Fournisseur inconnu'
+                    reference: scn.referenceNumber || scn.id,
+                    quantityChange: -qty,
+                    partner: supplier ? supplier.name : 'Fournisseur inconnu',
+                    unitPrice: Number((item as any).price || (item as any).cost) || 0,
+                    totalPrice: Number(item.subtotal) || 0
                 });
-                totalPurchaseReturn += item.quantity;
-            }
+                totalPurchaseReturn += qty;
+            });
         });
 
-        // Sort and Calculate Running Balance
-        const parseDate = (date: any): number => {
-            if (!date) return 0;
-            if (date && typeof date.toDate === 'function') return date.toDate().getTime();
-            if (date && typeof date === 'object' && 'seconds' in date) return date.seconds * 1000;
-            const d = new Date(date);
-            return isNaN(d.getTime()) ? 0 : d.getTime();
-        };
+        // --- Sort chronologically (oldest first) for running balance calculation ---
+        rawHistory.sort((a, b) => parseFirestoreDate(a.date).getTime() - parseFirestoreDate(b.date).getTime());
 
-        rawHistory.sort((a, b) => parseDate(a.date) - parseDate(b.date));
-
-        // Calculate Initial Stock based on Warehouse Selection
-        let currentTotalStock = 0;
-        if (selectedWarehouseId === 'all') {
-             currentTotalStock = (product.stockLevels || []).reduce((sum, sl) => sum + sl.quantity, 0);
-        } else {
-             const sl = (product.stockLevels || []).find(sl => sl.warehouseId === selectedWarehouseId);
-             currentTotalStock = sl ? sl.quantity : 0;
-        }
+        // --- Calculate Running Balance backwards (start from current stock) ---
+        const currentTotalStock = selectedWarehouseId === 'all'
+            ? (product.stockLevels || []).reduce((sum, sl) => sum + sl.quantity, 0)
+            : ((product.stockLevels || []).find(sl => sl.warehouseId === selectedWarehouseId)?.quantity || 0);
 
         let running = currentTotalStock;
         
-        // Calculate backwards
+        // Work backwards: newest → oldest
         const historyReversed = [...rawHistory].reverse();
         const historyWithBalance = historyReversed.map(item => {
+            // newQuantity = the balance AT the time of this operation (after it occurred)
             const itemBalance = running;
-            running -= item.quantityChange;
+            running = Number((running - item.quantityChange).toFixed(4));
             return { ...item, newQuantity: itemBalance };
-        }); 
+        });
         
-        // The last value of 'running' after the loop is the Stock BEFORE the first transaction found.
-        // We can treat this as "Opening Stock" relative to the displayed period.
+        // 'running' now holds the stock value BEFORE the oldest transaction (opening stock)
         const calculatedOpeningStock = running;
 
-        if (calculatedOpeningStock !== 0) {
-            // Add a row for the initial state before the fetched history
-            const oldestDate = rawHistory.length > 0 ? rawHistory[0].date : new Date();
+        // Add opening stock row at the END of the reversed array (it will appear at the bottom of the table)
+        if (calculatedOpeningStock !== 0 && rawHistory.length > 0) {
+            const oldestDate = parseFirestoreDate(rawHistory[0].date);
+            const initialDate = new Date(oldestDate.getTime() - 1000);
             
             historyWithBalance.push({
                 type: 'Stock Initial',
-                date: oldestDate,
+                date: initialDate.toISOString(),
                 reference: 'SOLDE_ANT',
                 quantityChange: calculatedOpeningStock,
                 newQuantity: calculatedOpeningStock,
-                partner: '-',
+                partner: 'Solde antérieur',
                 warehouseName: 'Solde précédent'
             });
         }
 
         setHistory(historyWithBalance);
 
-        // Profit Calculation
-        const estimatedCostOfGoodsSold = totalSold * product.cost;
-        const estimatedProfit = totalRevenue - estimatedCostOfGoodsSold;
+        // --- Stats Calculation ---
+        let totalRevenueNet = 0;
+        rawSales.forEach(sale => {
+            if (selectedWarehouseId !== 'all' && sale.warehouseId !== selectedWarehouseId) return;
+            const items = findItems(Array.isArray(sale.items) ? sale.items : []);
+            items.forEach(item => {
+                totalRevenueNet += Number(item.subtotal) || 0;
+            });
+        });
+        rawCreditNotes.forEach(cn => {
+            if (selectedWarehouseId !== 'all' && cn.warehouseId && cn.warehouseId !== selectedWarehouseId) return;
+            const items = findItems(Array.isArray(cn.items) ? cn.items : []);
+            items.forEach(item => {
+                totalRevenueNet -= Number(item.subtotal) || 0;
+            });
+        });
+
+        const netSoldQuantity = totalSold - totalSellReturn;
+        const estimatedProfit = totalRevenueNet - (netSoldQuantity * (product.cost || 0));
+        const openingStockTotal = calculatedOpeningStock + totalInitialStock;
+        const totalPhysicalIncoming = totalPurchase + openingStockTotal + totalSellReturn + transferIn + adjustmentIn;
+        const totalPhysicalOutgoing = totalSold + adjustmentOut + totalPurchaseReturn + transferOut;
 
         setStats({
             totalPurchase,
-            openingStock: calculatedOpeningStock + totalInitialStock, 
+            openingStock: openingStockTotal,
             totalSellReturn,
             transferIn,
             totalSold,
@@ -395,30 +479,26 @@ const ProductHistoryPage: React.FC = () => {
             adjustmentOut,
             totalPurchaseReturn,
             transferOut,
-            totalRevenue,
-            estimatedProfit
+            totalRevenue: totalRevenueNet,
+            estimatedProfit,
+            netSoldQuantity,
+            totalPhysicalIncoming,
+            totalPhysicalOutgoing
         });
 
-    }, [rawSales, rawPurchases, rawTransfers, rawAdjustments, rawCreditNotes, rawSupplierCreditNotes, product, id, warehouses, selectedWarehouseId]);
-
-    const parseDate = (date: any): number => {
-        if (!date) return 0;
-        try {
-            if (date && typeof date.toDate === 'function') return date.toDate().getTime();
-            if (date && typeof date === 'object' && 'seconds' in date) return date.seconds * 1000;
-            const d = new Date(date);
-            return isNaN(d.getTime()) ? 0 : d.getTime();
-        } catch (e) { return 0; }
-    };
+    }, [rawSales, rawPurchases, rawTransfers, rawAdjustments, rawCreditNotes, rawSupplierCreditNotes,
+        product, id, warehouses, selectedWarehouseId, customers, suppliers]);
 
     const handleExportCSV = () => {
         const ws = XLSX.utils.json_to_sheet(history.map(h => ({
             Type: h.type,
             'Fournisseur/Client': h.partner || '-',
-            Date: new Date(parseDate(h.date)).toLocaleDateString('fr-FR'),
+            Entrepôt: h.warehouseName || '-',
+            Date: parseFirestoreDate(h.date).toLocaleDateString('fr-FR'),
+            Heure: parseFirestoreDate(h.date).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
             Reference: h.reference,
             Changement: h.quantityChange,
-            'Nouvelle Quantité': h.newQuantity,
+            'Nouveau Stock': h.newQuantity,
             'Prix Unitaire': h.unitPrice || '-',
             'Total': h.totalPrice || '-'
         })));
@@ -430,7 +510,6 @@ const ProductHistoryPage: React.FC = () => {
     const handleExportPDF = () => {
         const doc = new jsPDF();
         
-        // Header
         doc.setFontSize(18);
         doc.text(`Historique Stock: ${product?.name}`, 14, 22);
         
@@ -438,40 +517,36 @@ const ProductHistoryPage: React.FC = () => {
         doc.text(`SKU: ${product?.sku}`, 14, 30);
         doc.text(`Date: ${new Date().toLocaleDateString('fr-FR')}`, 14, 36);
 
-        // Stats Table
-        const statsData = [
-            ['Entrées', 'Sorties'],
-            [`Stock Ouverture: ${stats.openingStock}`, `Ventes: ${stats.totalSold}`],
-            [`Achats: ${stats.totalPurchase}`, `Retours Fourn.: ${stats.totalPurchaseReturn}`],
-            [`Retours Clients: ${stats.totalSellReturn}`, `Transferts Sortants: ${stats.transferOut}`],
-            [`Transferts Entrants: ${stats.transferIn}`, `Ajustements: ${stats.totalAdjustment}`]
-        ];
-
         autoTable(doc, {
             startY: 45,
             head: [['Résumé Entrées', 'Résumé Sorties']],
             body: [
-                [`Total Entrées: ${stats.totalPurchase + stats.totalSellReturn + stats.transferIn}`, `Total Sorties: ${stats.totalSold + stats.totalPurchaseReturn + stats.transferOut}`],
-                ...statsData.slice(1).map(row => [row[0], row[1]]) // Simple mapping, could be better formatted
+                [`Total Achats: ${stats.totalPurchase}`, `Total Ventes: ${stats.totalSold}`],
+                [`Stock Ouverture: ${stats.openingStock}`, `Retours Fourn.: ${stats.totalPurchaseReturn}`],
+                [`Retours Clients: ${stats.totalSellReturn}`, `Transferts Sortants: ${stats.transferOut}`],
+                [`Transferts Entrants: ${stats.transferIn}`, `Ajustements (-): ${stats.adjustmentOut}`],
+                [`Ajustements (+): ${stats.adjustmentIn}`, `Stock Actuel: ${displayedCurrentStock}`],
             ],
             theme: 'grid',
             headStyles: { fillColor: [66, 66, 66] }
         });
 
-        // History Table
         autoTable(doc, {
             startY: (doc as any).lastAutoTable.finalY + 10,
-            head: [['Type', 'Partenaire', 'Date', 'Réf.', 'Changement', 'Stock', 'Prix U.', 'Total']],
-            body: history.map(h => [
-                h.type,
-                h.partner || '-',
-                new Date(parseDate(h.date)).toLocaleDateString('fr-FR'),
-                h.reference,
-                h.quantityChange,
-                h.newQuantity,
-                h.unitPrice ? formatCurrency(h.unitPrice) : '-',
-                h.totalPrice ? formatCurrency(h.totalPrice) : '-'
-            ]),
+            head: [['Type', 'Partenaire', 'Date', 'Réf.', 'Chgt', 'Stock', 'Prix U.', 'Total']],
+            body: history.map(h => {
+                const d = parseFirestoreDate(h.date);
+                return [
+                    h.type,
+                    h.partner || '-',
+                    `${d.toLocaleDateString('fr-FR')} ${d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`,
+                    h.reference,
+                    h.quantityChange > 0 ? `+${h.quantityChange.toFixed(2)}` : h.quantityChange.toFixed(2),
+                    h.newQuantity?.toFixed(2) ?? '-',
+                    h.unitPrice ? formatCurrency(h.unitPrice) : '-',
+                    h.totalPrice ? formatCurrency(h.totalPrice) : '-'
+                ];
+            }),
             theme: 'striped',
             headStyles: { fillColor: [41, 128, 185] },
             styles: { fontSize: 8 }
@@ -484,13 +559,33 @@ const ProductHistoryPage: React.FC = () => {
         return new Intl.NumberFormat('fr-FR', { style: 'currency', currency: settings?.currencySymbol || 'XOF' }).format(amount);
     };
 
-    if (loading && !product) {
-        return <div className="flex h-screen items-center justify-center text-gray-500 font-bold uppercase tracking-widest animate-pulse">Chargement...</div>;
+    // Type badge styling
+    const getTypeBadge = (type: HistoryItem['type']) => {
+        switch (type) {
+            case 'Vente':               return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300';
+            case 'Achat':               return 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300';
+            case 'Transfert (Entrant)': return 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300';
+            case 'Transfert (Sortant)': return 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300';
+            case 'Ajustement':          return 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300';
+            case 'Retour Vente':        return 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300';
+            case 'Retour Achat':        return 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300';
+            case 'Stock Initial':       return 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300';
+            default:                    return 'bg-gray-100 text-gray-600';
+        }
+    };
+
+    if (loading) {
+        return (
+            <div className="flex h-screen items-center justify-center flex-col gap-3">
+                <div className="w-10 h-10 border-4 border-primary-500 border-t-transparent rounded-full animate-spin"></div>
+                <span className="text-gray-500 font-bold uppercase tracking-widest text-xs animate-pulse">Chargement des mouvements...</span>
+            </div>
+        );
     }
 
     if (!product) {
         return (
-             <div className="p-6 max-w-7xl mx-auto text-center">
+            <div className="p-6 max-w-7xl mx-auto text-center">
                 <button onClick={() => navigate('/products')} className="flex items-center text-gray-500 hover:text-gray-900 mb-6 font-bold uppercase text-xs tracking-widest mx-auto">
                     <ArrowLeftIcon className="w-5 h-5 mr-2" /> Retour
                 </button>
@@ -511,6 +606,13 @@ const ProductHistoryPage: React.FC = () => {
                     Retour
                 </button>
             </div>
+
+            {/* Error Banner */}
+            {fetchError && (
+                <div className="mb-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-2xl text-red-700 dark:text-red-300 text-sm font-medium">
+                    ⚠️ {fetchError}
+                </div>
+            )}
 
             <div ref={printRef} className="space-y-6">
                 {/* Top Card: Selection/Info */}
@@ -550,7 +652,6 @@ const ProductHistoryPage: React.FC = () => {
                                         )}
                                     </div>
                                 )}
-                                {/* Overlay to close dropdown when clicking outside */}
                                 {showProductDropdown && (
                                     <div className="fixed inset-0 z-0" onClick={() => setShowProductDropdown(false)}></div>
                                 )}
@@ -575,10 +676,7 @@ const ProductHistoryPage: React.FC = () => {
                                 {showWarehouseDropdown && (
                                     <div className="absolute z-10 w-full mt-1 bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-100 dark:border-gray-700 max-h-60 overflow-auto">
                                         <div 
-                                            onClick={() => {
-                                                setSelectedWarehouseId('all');
-                                                setShowWarehouseDropdown(false);
-                                            }}
+                                            onClick={() => { setSelectedWarehouseId('all'); setShowWarehouseDropdown(false); }}
                                             className={`px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer border-b border-gray-50 dark:border-gray-700 ${selectedWarehouseId === 'all' ? 'bg-blue-50 dark:bg-blue-900/20' : ''}`}
                                         >
                                             <div className="text-sm font-bold text-gray-900 dark:text-white">Tous les entrepôts</div>
@@ -587,10 +685,7 @@ const ProductHistoryPage: React.FC = () => {
                                         {warehouses.map(w => (
                                             <div 
                                                 key={w.id}
-                                                onClick={() => {
-                                                    setSelectedWarehouseId(w.id);
-                                                    setShowWarehouseDropdown(false);
-                                                }}
+                                                onClick={() => { setSelectedWarehouseId(w.id); setShowWarehouseDropdown(false); }}
                                                 className={`px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer border-b border-gray-50 dark:border-gray-700 last:border-0 ${selectedWarehouseId === w.id ? 'bg-blue-50 dark:bg-blue-900/20' : ''}`}
                                             >
                                                 <div className="text-sm font-bold text-gray-900 dark:text-white">{w.name}</div>
@@ -599,7 +694,6 @@ const ProductHistoryPage: React.FC = () => {
                                         ))}
                                     </div>
                                 )}
-                                {/* Overlay to close dropdown when clicking outside */}
                                 {showWarehouseDropdown && (
                                     <div className="fixed inset-0 z-0" onClick={() => setShowWarehouseDropdown(false)}></div>
                                 )}
@@ -613,28 +707,36 @@ const ProductHistoryPage: React.FC = () => {
                     <h2 className="text-lg font-black text-gray-900 dark:text-white mb-6 uppercase tracking-tight">{product.name} ({product.sku})</h2>
                     
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                        {/* Quantités en */}
+                        {/* Quantités entrantes */}
                         <div className="bg-green-50 dark:bg-green-900/20 p-6 rounded-3xl border border-green-100 dark:border-green-800/30">
                             <h3 className="text-sm font-black text-green-800 dark:text-green-400 mb-4 uppercase tracking-wider flex items-center">
                                 <TrendingUpIcon className="w-4 h-4 mr-2" />
-                                Quantités en
+                                Quantités entrantes
                             </h3>
                             <div className="space-y-3">
                                 <div className="flex justify-between text-sm border-b border-green-200 dark:border-green-800/50 pb-2">
                                     <span className="text-green-700 dark:text-green-300 font-bold">Total achat</span>
-                                    <span className="font-black text-gray-900 dark:text-white">{stats.totalPurchase.toFixed(2)} {settings?.currencySymbol || ''}</span>
+                                    <span className="font-black text-gray-900 dark:text-white">{stats.totalPurchase.toFixed(2)} {unitName}</span>
                                 </div>
                                 <div className="flex justify-between text-sm border-b border-green-200 dark:border-green-800/50 pb-2">
                                     <span className="text-green-700 dark:text-green-300 font-bold">Stock d'ouverture</span>
-                                    <span className="font-black text-gray-900 dark:text-white">{stats.openingStock.toFixed(2)} {settings?.currencySymbol || ''}</span>
+                                    <span className="font-black text-gray-900 dark:text-white">{stats.openingStock.toFixed(2)} {unitName}</span>
                                 </div>
                                 <div className="flex justify-between text-sm border-b border-green-200 dark:border-green-800/50 pb-2">
-                                    <span className="text-green-700 dark:text-green-300 font-bold">Retour des ventes total</span>
-                                    <span className="font-black text-gray-900 dark:text-white">{stats.totalSellReturn.toFixed(2)} {settings?.currencySymbol || ''}</span>
+                                    <span className="text-green-700 dark:text-green-300 font-bold">Retour des ventes</span>
+                                    <span className="font-black text-gray-900 dark:text-white">{stats.totalSellReturn.toFixed(2)} {unitName}</span>
                                 </div>
                                 <div className="flex justify-between text-sm border-b border-green-200 dark:border-green-800/50 pb-2">
-                                    <span className="text-green-700 dark:text-green-300 font-bold">Transferts de stock (Dans)</span>
-                                    <span className="font-black text-gray-900 dark:text-white">{stats.transferIn.toFixed(2)} {settings?.currencySymbol || ''}</span>
+                                    <span className="text-green-700 dark:text-green-300 font-bold">Transferts entrants</span>
+                                    <span className="font-black text-gray-900 dark:text-white">{stats.transferIn.toFixed(2)} {unitName}</span>
+                                </div>
+                                <div className="flex justify-between text-sm border-b border-green-200 dark:border-green-800/50 pb-2">
+                                    <span className="text-green-700 dark:text-green-300 font-bold">Ajustements (+)</span>
+                                    <span className="font-black text-gray-900 dark:text-white">{stats.adjustmentIn.toFixed(2)} {unitName}</span>
+                                </div>
+                                <div className="flex justify-between text-sm pt-2 bg-green-100/50 dark:bg-green-900/40 px-2 rounded-lg mt-1 font-black">
+                                    <span className="text-green-800 dark:text-green-200 uppercase text-[10px]">Total Entrées</span>
+                                    <span className="text-green-900 dark:text-white">{stats.totalPhysicalIncoming.toFixed(2)} {unitName}</span>
                                 </div>
                             </div>
                         </div>
@@ -648,19 +750,23 @@ const ProductHistoryPage: React.FC = () => {
                             <div className="space-y-3">
                                 <div className="flex justify-between text-sm border-b border-red-200 dark:border-red-800/50 pb-2">
                                     <span className="text-red-700 dark:text-red-300 font-bold">Total vendu</span>
-                                    <span className="font-black text-gray-900 dark:text-white">{stats.totalSold.toFixed(2)} {settings?.currencySymbol || ''}</span>
+                                    <span className="font-black text-gray-900 dark:text-white">{stats.totalSold.toFixed(2)} {unitName}</span>
                                 </div>
                                 <div className="flex justify-between text-sm border-b border-red-200 dark:border-red-800/50 pb-2">
-                                    <span className="text-red-700 dark:text-red-300 font-bold">Total stock d'adjustment</span>
-                                    <span className="font-black text-gray-900 dark:text-white">{stats.adjustmentOut.toFixed(2)} {settings?.currencySymbol || ''}</span>
+                                    <span className="text-red-700 dark:text-red-300 font-bold">Ajustements (-)</span>
+                                    <span className="font-black text-gray-900 dark:text-white">{stats.adjustmentOut.toFixed(2)} {unitName}</span>
                                 </div>
                                 <div className="flex justify-between text-sm border-b border-red-200 dark:border-red-800/50 pb-2">
-                                    <span className="text-red-700 dark:text-red-300 font-bold">Retour d'achat total</span>
-                                    <span className="font-black text-gray-900 dark:text-white">{stats.totalPurchaseReturn.toFixed(2)} {settings?.currencySymbol || ''}</span>
+                                    <span className="text-red-700 dark:text-red-300 font-bold">Retour d'achat</span>
+                                    <span className="font-black text-gray-900 dark:text-white">{stats.totalPurchaseReturn.toFixed(2)} {unitName}</span>
                                 </div>
                                 <div className="flex justify-between text-sm border-b border-red-200 dark:border-red-800/50 pb-2">
-                                    <span className="text-red-700 dark:text-red-300 font-bold">Transferts de stock (En dehors)</span>
-                                    <span className="font-black text-gray-900 dark:text-white">{stats.transferOut.toFixed(2)} {settings?.currencySymbol || ''}</span>
+                                    <span className="text-red-700 dark:text-red-300 font-bold">Transferts sortants</span>
+                                    <span className="font-black text-gray-900 dark:text-white">{stats.transferOut.toFixed(2)} {unitName}</span>
+                                </div>
+                                <div className="flex justify-between text-sm pt-2 bg-red-100/50 dark:bg-red-900/40 px-2 rounded-lg mt-1 font-black">
+                                    <span className="text-red-800 dark:text-red-200 uppercase text-[10px]">Total Sorties</span>
+                                    <span className="text-red-900 dark:text-white">{stats.totalPhysicalOutgoing.toFixed(2)} {unitName}</span>
                                 </div>
                             </div>
                         </div>
@@ -675,53 +781,99 @@ const ProductHistoryPage: React.FC = () => {
                                 <div className="flex justify-between text-sm border-b border-blue-200 dark:border-blue-800/50 pb-2">
                                     <span className="text-blue-700 dark:text-blue-300 font-black uppercase">Stock actuel</span>
                                     <span className="font-black text-gray-900 dark:text-white text-lg">
-                                        {displayedCurrentStock.toFixed(2)} {settings?.currencySymbol || ''}
+                                        {displayedCurrentStock.toFixed(2)} {unitName}
+                                    </span>
+                                </div>
+                                <div className="flex justify-between text-sm border-b border-blue-200 dark:border-blue-800/50 pb-2">
+                                    <span className="text-blue-700 dark:text-gray-400 font-bold uppercase">Ventes Nettes (Qté)</span>
+                                    <span className="font-black text-blue-900 dark:text-blue-200">
+                                        {stats.netSoldQuantity.toFixed(2)} {unitName}
+                                    </span>
+                                </div>
+                                <div className="flex justify-between text-sm border-b border-blue-200 dark:border-blue-800/50 pb-2">
+                                    <span className="text-blue-700 dark:text-gray-400 font-bold uppercase">Chiffre d'Affaires Net</span>
+                                    <span className="font-black text-blue-800 dark:text-blue-300">
+                                        {formatCurrency(stats.totalRevenue)}
+                                    </span>
+                                </div>
+                                <div className="flex justify-between text-sm pt-2">
+                                    <span className="text-blue-700 dark:text-gray-400 font-bold uppercase">Bénéfice Estimé</span>
+                                    <span className={`font-black ${stats.estimatedProfit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                        {formatCurrency(stats.estimatedProfit)}
                                     </span>
                                 </div>
                             </div>
                         </div>
                     </div>
 
-                    {/* Table */}
+                    {/* History Table */}
                     <div className="bg-white dark:bg-gray-800 shadow-2xl rounded-3xl border border-gray-100 dark:border-gray-700 overflow-hidden mt-8">
+                        {/* Table Header info */}
+                        <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
+                            <span className="text-xs font-black uppercase tracking-widest text-gray-500">
+                                {history.length} mouvement{history.length > 1 ? 's' : ''} trouvé{history.length > 1 ? 's' : ''}
+                            </span>
+                            <span className="text-xs text-gray-400 italic">Du plus récent au plus ancien</span>
+                        </div>
                         <div className="overflow-x-auto">
                             <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
                                 <thead className="bg-primary-600 text-white">
                                     <tr>
                                         <th className="px-6 py-4 text-left text-[10px] font-black uppercase tracking-wider">Type</th>
                                         <th className="px-6 py-4 text-left text-[10px] font-black uppercase tracking-wider">Changement</th>
-                                        <th className="px-6 py-4 text-left text-[10px] font-black uppercase tracking-wider">Nouveau Stock</th>
-                                        <th className="px-6 py-4 text-left text-[10px] font-black uppercase tracking-wider">Date</th>
-                                        <th className="px-6 py-4 text-left text-[10px] font-black uppercase tracking-wider">Réf</th>
-                                        <th className="px-6 py-4 text-right text-[10px] font-black uppercase tracking-wider">Info Partenaire</th>
+                                        <th className="px-6 py-4 text-left text-[10px] font-black uppercase tracking-wider">Stock après</th>
+                                        <th className="px-6 py-4 text-left text-[10px] font-black uppercase tracking-wider">Date & Heure</th>
+                                        <th className="px-6 py-4 text-left text-[10px] font-black uppercase tracking-wider">Référence</th>
+                                        <th className="px-6 py-4 text-right text-[10px] font-black uppercase tracking-wider">Partenaire / Info</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
                                     {history.length === 0 ? (
-                                        <tr><td colSpan={6} className="py-12 text-center text-gray-400 font-medium italic">Aucun historique de stock trouvé</td></tr>
+                                        <tr>
+                                            <td colSpan={6} className="py-16 text-center">
+                                                <div className="flex flex-col items-center gap-3 text-gray-400">
+                                                    <PackageIcon className="w-10 h-10 opacity-30" />
+                                                    <span className="font-medium italic text-sm">Aucun mouvement de stock trouvé pour ce produit</span>
+                                                </div>
+                                            </td>
+                                        </tr>
                                     ) : (
                                         history.map((item, idx) => {
-                                            const timestamp = parseDate(item.date);
+                                            const d = parseFirestoreDate(item.date);
                                             return (
                                                 <tr key={idx} className="hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
-                                                    <td className="px-6 py-4 font-bold text-gray-900 dark:text-white text-xs uppercase">
-                                                        {item.type}
+                                                    <td className="px-6 py-3">
+                                                        <span className={`inline-flex px-2 py-1 rounded-full text-[10px] font-black uppercase tracking-wide ${getTypeBadge(item.type)}`}>
+                                                            {item.type}
+                                                        </span>
                                                     </td>
-                                                    <td className={`px-6 py-4 font-black text-xs ${item.quantityChange > 0 ? 'text-green-600' : item.quantityChange < 0 ? 'text-red-600' : 'text-gray-500'}`}>
+                                                    <td className={`px-6 py-3 font-black text-sm ${item.quantityChange > 0 ? 'text-green-600 dark:text-green-400' : item.quantityChange < 0 ? 'text-red-600 dark:text-red-400' : 'text-gray-400'}`}>
                                                         {item.quantityChange > 0 ? '+' : ''}{item.quantityChange.toFixed(2)}
+                                                        <span className="text-[10px] ml-1 text-gray-400 font-normal">{unitName}</span>
                                                     </td>
-                                                    <td className="px-6 py-4 font-black text-gray-800 dark:text-gray-200 text-xs">
-                                                        {item.newQuantity?.toFixed(2)}
+                                                    <td className="px-6 py-3 font-black text-gray-800 dark:text-gray-200 text-sm">
+                                                        {item.newQuantity?.toFixed(2) ?? '-'}
+                                                        <span className="text-[10px] ml-1 text-gray-400 font-normal">{unitName}</span>
                                                     </td>
-                                                    <td className="px-6 py-4 text-gray-500 text-xs font-medium">
-                                                        {timestamp ? new Date(timestamp).toLocaleDateString('fr-FR') : '-'}
-                                                        <span className="text-gray-400 ml-1 text-[10px]">{timestamp ? new Date(timestamp).toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'}) : ''}</span>
+                                                    <td className="px-6 py-3 text-gray-500 text-xs">
+                                                        <div className="font-semibold">{d.toLocaleDateString('fr-FR')}</div>
+                                                        <div className="text-gray-400">{d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</div>
                                                     </td>
-                                                    <td className="px-6 py-4 font-mono text-[10px] text-gray-500 bg-gray-50 dark:bg-gray-900 rounded inline-block my-2 mx-6">
-                                                        {item.reference || '-'}
+                                                    <td className="px-6 py-3">
+                                                        <span className="font-mono text-[10px] text-gray-500 bg-gray-50 dark:bg-gray-900 px-2 py-1 rounded">
+                                                            {item.reference || '-'}
+                                                        </span>
+                                                        {item.unitPrice ? (
+                                                            <div className="text-[9px] text-gray-400 mt-1">
+                                                                PU: {formatCurrency(item.unitPrice)}
+                                                            </div>
+                                                        ) : null}
                                                     </td>
-                                                    <td className="px-6 py-4 text-right text-gray-600 dark:text-gray-400 text-xs font-bold uppercase">
-                                                        {item.partner || '-'}
+                                                    <td className="px-6 py-3 text-right">
+                                                        <div className="text-gray-700 dark:text-gray-300 text-xs font-bold">{item.partner || '-'}</div>
+                                                        {item.warehouseName && (
+                                                            <div className="text-[10px] text-gray-400 mt-0.5">{item.warehouseName}</div>
+                                                        )}
                                                     </td>
                                                 </tr>
                                             );

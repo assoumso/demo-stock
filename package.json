@@ -9,13 +9,19 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "firebase": "^12.4.0",
+    "@supabase/supabase-js": "^2.100.0",
+    "@types/react-virtualized-auto-sizer": "^1.0.4",
+    "@types/react-window": "^1.8.8",
+    "dotenv": "^17.3.1",
+    "html2canvas": "^1.4.1",
     "jspdf": "^4.1.0",
     "jspdf-autotable": "^5.0.7",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.3",
-    "react-router-dom": "^7.9.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0",
     "react-to-print": "^3.2.0",
+    "react-virtualized-auto-sizer": "^2.0.3",
+    "react-window": "^2.2.7",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

@@ -1,21 +1,20 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { db } from '../firebase';
-import { collection, doc, getDocs, addDoc, runTransaction, query, orderBy, where } from 'firebase/firestore';
+import { supabase } from '../supabase';
 import { Customer, Product, Warehouse, CreditNote, CreditNoteItem, SalePayment } from '../types';
 import { useAuth } from '../hooks/useAuth';
 import { ArrowLeftIcon, PlusIcon, DeleteIcon, SearchIcon, WarningIcon } from '../constants';
 import { formatCurrency } from '../utils/formatters';
+import { useData } from '../context/DataContext';
 
 const CreditNoteFormPage: React.FC = () => {
     const { user } = useAuth();
     const navigate = useNavigate();
     const location = useLocation();
+    
+    const { customers, products, warehouses, loading: dataLoading } = useData();
+
     const [loading, setLoading] = useState(false);
-    const [customers, setCustomers] = useState<Customer[]>([]);
-    const [products, setProducts] = useState<Product[]>([]);
-    const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
     
     // Form State
     const [customerId, setCustomerId] = useState('');
@@ -30,26 +29,10 @@ const CreditNoteFormPage: React.FC = () => {
     const [productSearch, setProductSearch] = useState('');
 
     useEffect(() => {
-        const loadData = async () => {
-            try {
-                const [cSnap, pSnap, wSnap] = await Promise.all([
-                    getDocs(query(collection(db, "customers"), orderBy("name"))),
-                    getDocs(collection(db, "products")),
-                    getDocs(collection(db, "warehouses"))
-                ]);
-                
-                setCustomers(cSnap.docs.map(d => ({id: d.id, ...d.data()} as Customer)));
-                setProducts(pSnap.docs.map(d => ({id: d.id, ...d.data()} as Product)));
-                const ws = wSnap.docs.map(d => ({id: d.id, ...d.data()} as Warehouse));
-                setWarehouses(ws);
-                if (ws.length > 0) setWarehouseId(ws.find(w => w.isMain)?.id || ws[0].id);
-            } catch (error) {
-                console.error('Erreur lors du chargement des données:', error);
-                alert('Erreur lors du chargement des données. Veuillez actualiser la page.');
-            }
-        };
-        loadData();
-    }, []);
+        if (!dataLoading && warehouses.length > 0 && !warehouseId) {
+             setWarehouseId(warehouses.find(w => w.isMain)?.id || warehouses[0].id);
+        }
+    }, [dataLoading, warehouses, warehouseId]);
 
     // Handle preselected customer
     useEffect(() => {
@@ -137,136 +120,121 @@ const CreditNoteFormPage: React.FC = () => {
             alert("Veuillez ajouter au moins un produit");
             return;
         }
-
         setLoading(true);
         try {
-            await runTransaction(db, async (transaction) => {
-                // PHASE 1: READS (Must be first)
-                // Read Customer
-                const customerRef = doc(db, "customers", customerId);
-                const customerSnap = await transaction.get(customerRef);
-                if (!customerSnap.exists()) {
-                    throw new Error("Client introuvable dans la base de données");
-                }
-                const customerData = customerSnap.data() as Customer;
+            const dateStr = new Date().toISOString();
+            
+            // PHASE 1: READS & PREPARATION
+            // Read Customer
+            const { data: customerData, error: customerError } = await supabase
+                .from('customers')
+                .select('*')
+                .eq('id', customerId)
+                .single();
+            
+            if (customerError || !customerData) {
+                throw new Error("Client introuvable");
+            }
 
-                // Read Products (if return) - Prepare updates
-                const productUpdates: { ref: any, data: any }[] = [];
-                if (type === 'return' && warehouseId) {
-                    for (const item of items) {
-                        if (!item.productId || !item.productId.trim() || item.quantity <= 0) {
-                            throw new Error(`Produit invalide: ${item.productName || 'Nom inconnu'}`);
-                        }
-                        
-                        const productRef = doc(db, "products", item.productId);
-                        const productSnap = await transaction.get(productRef);
-                        if (!productSnap.exists()) {
-                            throw new Error(`Produit ${item.productName || item.productId} introuvable`);
-                        }
-                        
-                        const productData = productSnap.data() as Product;
-                        if (!productData.stockLevels || !Array.isArray(productData.stockLevels)) {
-                            throw new Error(`Données de stock invalides pour le produit ${item.productName || item.productId}`);
-                        }
-                        
-                        const stockLevels = [...productData.stockLevels];
-                        const existingLevelIndex = stockLevels.findIndex(sl => sl && sl.warehouseId === warehouseId);
-                        
-                        if (existingLevelIndex >= 0) {
-                            stockLevels[existingLevelIndex] = {
-                                ...stockLevels[existingLevelIndex],
-                                quantity: (stockLevels[existingLevelIndex].quantity || 0) + item.quantity
-                            };
-                        } else {
-                            stockLevels.push({ warehouseId, quantity: item.quantity });
-                        }
-                        
-                        productUpdates.push({ ref: productRef, data: { stockLevels } });
+            // Generate IDs and Ref
+            const paymentId = crypto.randomUUID();
+            const creditNoteId = crypto.randomUUID();
+            const refStr = `AVOIR-${Date.now().toString().slice(-6)}`;
+
+            // 1. Prepare Product Stock Updates (if return)
+            if (type === 'return' && warehouseId) {
+                for (const item of items) {
+                    if (!item.productId || item.quantity <= 0) continue;
+                    
+                    const { data: productData, error: productError } = await supabase
+                        .from('products')
+                        .select('*')
+                        .eq('id', item.productId)
+                        .single();
+                    
+                    if (productError || !productData) {
+                        throw new Error(`Produit ${item.productName} introuvable`);
                     }
+                    
+                    const product = productData as Product;
+                    const stockLevels = [...(product.stockLevels || [])];
+                    const existingLevelIndex = stockLevels.findIndex(sl => sl && sl.warehouseId === warehouseId);
+                    
+                    if (existingLevelIndex >= 0) {
+                        stockLevels[existingLevelIndex] = {
+                            ...stockLevels[existingLevelIndex],
+                            quantity: (Number(stockLevels[existingLevelIndex].quantity) || 0) + item.quantity
+                        };
+                    } else {
+                        stockLevels.push({ warehouseId, quantity: item.quantity });
+                    }
+                    
+                    // Update Product Stock
+                    const { error: updateStockError } = await supabase
+                        .from('products')
+                        .update({ stockLevels })
+                        .eq('id', item.productId);
+                    
+                    if (updateStockError) throw updateStockError;
                 }
+            }
 
-                // PHASE 2: WRITES
-                // Generate Ref
-                const ref = `AVOIR-${Date.now().toString().slice(-6)}`;
-                
-                // Create Payment Record (for Statement)
-                const paymentRef = doc(collection(db, "salePayments"));
-                const paymentData: SalePayment = {
-                    id: paymentRef.id,
+            // PHASE 2: SEQUENTIAL WRITES
+            // 2. Create Payment Record (for Statement)
+            const { error: paymentError } = await supabase
+                .from('sale_payments')
+                .insert({
+                    id: paymentId,
                     saleId: `CREDIT_BALANCE_${customerId}`,
                     customerId,
-                    date: new Date().toISOString(),
+                    date: dateStr,
                     amount: totalAmount,
                     method: 'Compte Avoir',
                     createdByUserId: user?.uid || '',
-                    notes: `Note de Crédit: ${ref} - ${reason || ''}`,
+                    notes: `Note de Crédit: ${refStr} - ${reason || ''}`,
                     momoOperator: '',
                     momoNumber: ''
-                };
-                transaction.set(paymentRef, paymentData);
+                });
+            if (paymentError) throw paymentError;
 
-                // Create Credit Note
-                const newNoteRef = doc(collection(db, "creditNotes"));
-                // Sanitize items to ensure no undefined values
-                const sanitizedItems = (type === 'return' ? items : []).map(i => ({
-                    productId: i.productId || '',
-                    productName: i.productName || 'Produit Inconnu',
-                    quantity: i.quantity || 0,
-                    price: i.price || 0,
-                    subtotal: i.subtotal || 0
-                }));
+            // 3. Create Credit Note
+            const sanitizedItems = (type === 'return' ? items : []).map(i => ({
+                productId: i.productId || '',
+                productName: i.productName || 'Produit Inconnu',
+                quantity: i.quantity || 0,
+                price: i.price || 0,
+                subtotal: i.subtotal || 0
+            }));
 
-                const newNote: CreditNote = {
-                    id: newNoteRef.id,
-                    referenceNumber: ref,
-                    date: new Date().toISOString(),
+            const { error: creditNoteError } = await supabase
+                .from('credit_notes')
+                .insert({
+                    id: creditNoteId,
+                    referenceNumber: refStr,
+                    date: dateStr,
                     customerId,
                     warehouseId: type === 'return' ? (warehouseId || '') : '',
                     items: sanitizedItems,
                     amount: totalAmount,
                     reason: reason || '',
-                    paymentId: paymentRef.id,
+                    paymentId: paymentId,
                     createdByUserId: user?.uid || ''
-                };
-                transaction.set(newNoteRef, newNote);
+                });
+            if (creditNoteError) throw creditNoteError;
 
-                // Update Customer Balance
-                const currentBalance = Number(customerData.creditBalance || 0);
-                const newBalance = currentBalance + Number(totalAmount);
-                if (newBalance < 0) {
-                    throw new Error("Le solde de crédit ne peut pas être négatif");
-                }
-                transaction.update(customerRef, { creditBalance: newBalance });
+            // 4. Update Customer Balance
+            const currentBalance = Number(customerData.creditBalance || 0);
+            const { error: balanceError } = await supabase
+                .from('customers')
+                .update({ creditBalance: currentBalance + Number(totalAmount) })
+                .eq('id', customerId);
+            if (balanceError) throw balanceError;
 
-                // Update Stock
-                for (const update of productUpdates) {
-                    transaction.update(update.ref, update.data);
-                }
-            });
-            
-            if (navigate) {
-                navigate('/credit-notes');
-            } else {
-                window.location.href = '/credit-notes';
-            }
-        } catch (err) {
-            console.error('Erreur détaillée lors de la création de la note de crédit:', err);
-            let errorMessage = 'Erreur inconnue lors de la création de la note de crédit';
-            
-            if (err instanceof Error) {
-                errorMessage = err.message;
-                if (err.message.includes('permission-denied')) {
-                    errorMessage = 'Permission refusée. Vérifiez vos droits d\'accès.';
-                } else if (err.message.includes('not-found')) {
-                    errorMessage = 'Document introuvable dans la base de données.';
-                } else if (err.message.includes('already-exists')) {
-                    errorMessage = 'Cette note de crédit existe déjà.';
-                }
-            } else if (typeof err === 'string') {
-                errorMessage = err;
-            }
-            
-            alert(`Erreur technique: ${err instanceof Error ? err.message : JSON.stringify(err)}`);
+            console.log("✅ Note de crédit et impacts enregistrés avec succès");
+            navigate('/credit-notes');
+        } catch (err: any) {
+            console.error('Erreur lors de la création de la note de crédit:', err);
+            alert(`Erreur: ${err.message || "Échec de l'enregistrement"}`);
         } finally {
             setLoading(false);
         }

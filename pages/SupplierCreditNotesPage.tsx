@@ -1,24 +1,23 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { db } from '../firebase';
-import { collection, getDocs, doc, deleteDoc, query, orderBy, runTransaction } from 'firebase/firestore';
+import { supabase } from '../supabase';
 import { SupplierCreditNote, Supplier, AppSettings } from '../types';
 import { useAuth } from '../hooks/useAuth';
+import { useData } from '../context/DataContext';
 import { Pagination } from '../components/Pagination';
 import { PlusIcon, DeleteIcon, SearchIcon, PrintIcon } from '../constants';
 import Modal from '../components/Modal';
 import { SupplierCreditNotePrint } from '../components/SupplierCreditNotePrint';
 import { useReactToPrint } from 'react-to-print';
-import { formatCurrency } from '../utils/formatters';
+import { formatCurrency, formatDate } from '../utils/formatters';
 
 const SupplierCreditNotesPage: React.FC = () => {
     const { user } = useAuth();
     const navigate = useNavigate();
+    const { suppliers, settings } = useData();
 
     const [creditNotes, setCreditNotes] = useState<SupplierCreditNote[]>([]);
-    const [suppliers, setSuppliers] = useState<Supplier[]>([]);
-    const [settings, setSettings] = useState<AppSettings | null>(null);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
     const [currentPage, setCurrentPage] = useState(1);
@@ -37,31 +36,18 @@ const SupplierCreditNotesPage: React.FC = () => {
 
     useEffect(() => {
         fetchData();
-        fetchSettings();
     }, []);
-
-    const fetchSettings = async () => {
-        try {
-            const snap = await getDocs(collection(db, "appSettings"));
-            if (!snap.empty) setSettings({ id: snap.docs[0].id, ...snap.docs[0].data() } as AppSettings);
-        } catch (err) {
-            console.error("Error fetching settings:", err);
-        }
-    };
 
     const fetchData = async () => {
         setLoading(true);
         try {
-            const [notesSnap, suppliersSnap] = await Promise.all([
-                getDocs(query(collection(db, "supplierCreditNotes"), orderBy("date", "desc"))),
-                getDocs(collection(db, "suppliers"))
-            ]);
+            const { data, error } = await supabase
+                .from('supplier_credit_notes')
+                .select('*')
+                .order('date', { ascending: false });
             
-            const notesData = notesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as SupplierCreditNote));
-            const suppliersData = suppliersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Supplier));
-
-            setCreditNotes(notesData);
-            setSuppliers(suppliersData);
+            if (error) throw error;
+            setCreditNotes((data || []) as SupplierCreditNote[]);
         } catch (err) {
             console.error("Error fetching credit notes:", err);
         } finally {
@@ -104,36 +90,47 @@ const SupplierCreditNotesPage: React.FC = () => {
         if (!noteToDelete) return;
         setIsDeleting(true);
         try {
-            await runTransaction(db, async (transaction) => {
-                // 1. Get current supplier data
-                const supplierRef = doc(db, "suppliers", noteToDelete.supplierId);
-                const supplierSnap = await transaction.get(supplierRef);
-                
-                if (!supplierSnap.exists()) throw new Error("Fournisseur introuvable");
-                
-                const supplierData = supplierSnap.data() as Supplier;
-                const currentCredit = supplierData.creditBalance || 0;
+            // 1. Get current supplier data from Supabase
+            const { data: supplierData, error: supplierError } = await supabase
+                .from('suppliers')
+                .select('*')
+                .eq('id', noteToDelete.supplierId)
+                .single();
+            
+            if (supplierError || !supplierData) throw new Error("Fournisseur introuvable");
+            
+            const currentCredit = Number(supplierData.creditBalance || 0);
 
-                // 2. Verify if we can deduct the credit (has it been used?)
-                if (currentCredit < noteToDelete.amount) {
-                    throw new Error(`Impossible de supprimer cet avoir : le crédit a déjà été utilisé (Solde actuel: ${formatCurrency(currentCredit)}).`);
-                }
+            // 2. Verify if we can deduct the credit (has it been used?)
+            if (currentCredit < noteToDelete.amount) {
+                throw new Error(`Impossible de supprimer cet avoir : le crédit a déjà été utilisé (Solde actuel: ${formatCurrency(currentCredit)}).`);
+            }
 
-                // 3. Update supplier balance
-                transaction.update(supplierRef, {
-                    creditBalance: currentCredit - noteToDelete.amount
-                });
+            // 3. Update supplier balance
+            const { error: updateError } = await supabase
+                .from('suppliers')
+                .update({ creditBalance: currentCredit - noteToDelete.amount })
+                .eq('id', noteToDelete.supplierId);
+            
+            if (updateError) throw updateError;
 
-                // 4. Delete the note
-                const noteRef = doc(db, "supplierCreditNotes", noteToDelete.id);
-                transaction.delete(noteRef);
+            // 4. Delete the note
+            const { error: deleteNoteError } = await supabase
+                .from('supplier_credit_notes')
+                .delete()
+                .eq('id', noteToDelete.id);
+            
+            if (deleteNoteError) throw deleteNoteError;
+            
+            // 5. Delete linked payment if exists
+            if (noteToDelete.paymentId) {
+                const { error: deletePaymentError } = await supabase
+                    .from('purchase_payments')
+                    .delete()
+                    .eq('id', noteToDelete.paymentId);
                 
-                // 5. Delete linked payment if exists (Purchase Payment)
-                if (noteToDelete.paymentId) {
-                     const paymentRef = doc(db, "purchasePayments", noteToDelete.paymentId);
-                     transaction.delete(paymentRef);
-                }
-            });
+                if (deletePaymentError) throw deletePaymentError;
+            }
             
             setCreditNotes(prev => prev.filter(n => n.id !== noteToDelete.id));
             setDeleteModalOpen(false);
@@ -144,8 +141,6 @@ const SupplierCreditNotesPage: React.FC = () => {
             setIsDeleting(false);
         }
     };
-
-    const formatDate = (date: string) => new Date(date).toLocaleDateString('fr-FR');
 
     return (
         <div className="p-6">

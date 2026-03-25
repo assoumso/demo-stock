@@ -1,20 +1,25 @@
 
 import React, { useState, useEffect, FormEvent } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { db } from '../firebase';
-import { doc, getDoc, setDoc, collection, addDoc, DocumentData } from 'firebase/firestore';
+import { supabase } from '../supabase';
 import { Supplier } from '../types';
 import { ArrowLeftIcon } from '../constants';
+import { useData } from '../context/DataContext';
+import { useToast } from '../context/ToastContext';
+import { normalizePhoneNumber, formatPhoneNumberDisplay } from '../utils/whatsappUtils';
 
 const SupplierFormPage: React.FC = () => {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
+    const { refreshData } = useData();
+    const { addToast } = useToast();
     const isEditing = !!id;
 
     const [formState, setFormState] = useState<Partial<Supplier>>({
         name: '',
         email: '',
         phone: '',
+        whatsapp: '',
         businessName: '',
         address: '',
         city: '',
@@ -30,15 +35,22 @@ const SupplierFormPage: React.FC = () => {
 
     useEffect(() => {
         if (isEditing) {
+            if (!id) return;
             const fetchSupplier = async () => {
                 try {
-                    const docSnap = await getDoc(doc(db, 'suppliers', id));
-                    if (docSnap.exists()) {
-                        setFormState(docSnap.data() as Supplier);
+                    const { data, error } = await supabase
+                        .from('suppliers')
+                        .select('*')
+                        .eq('id', id)
+                        .single();
+
+                    if (data && !error) {
+                        setFormState(data as Supplier);
                     } else {
                         setError("Fournisseur non trouvé.");
                     }
                 } catch (err) {
+                    console.error("Error fetching supplier:", err);
                     setError("Erreur lors du chargement.");
                 } finally {
                     setLoading(false);
@@ -53,19 +65,80 @@ const SupplierFormPage: React.FC = () => {
         setFormState(prev => ({ ...prev, [name]: value }));
     };
 
+    const handleWhatsappChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const value = e.target.value;
+        const cleanValue = value.replace(/[^0-9\s+]/g, '');
+        setFormState(prev => ({ ...prev, whatsapp: cleanValue }));
+    };
+
+    const handleWhatsappBlur = () => {
+        if (formState.whatsapp) {
+            const formatted = formatPhoneNumberDisplay(formState.whatsapp);
+            setFormState(prev => ({ ...prev, whatsapp: formatted }));
+        }
+    };
+
+    const generateSupplierDetails = () => {
+        return (
+            <div className="space-y-2">
+                <div className="font-semibold text-xs text-blue-700 dark:text-blue-400">Informations du fournisseur:</div>
+                {formState.name && <div className="flex justify-between text-xs border-b border-gray-300 dark:border-gray-600 pb-1">
+                    <span>Nom:</span>
+                    <span className="font-semibold">{formState.name}</span>
+                </div>}
+                {formState.phone && <div className="flex justify-between text-xs border-b border-gray-300 dark:border-gray-600 pb-1">
+                    <span>Téléphone:</span>
+                    <span className="font-semibold">{formState.phone}</span>
+                </div>}
+                {formState.city && <div className="flex justify-between text-xs border-b border-gray-300 dark:border-gray-600 pb-1">
+                    <span>Ville:</span>
+                    <span className="font-semibold">{formState.city}</span>
+                </div>}
+                {formState.email && <div className="flex justify-between text-xs border-b border-gray-300 dark:border-gray-600 pb-1">
+                    <span>Email:</span>
+                    <span className="font-semibold text-blue-600">{formState.email}</span>
+                </div>}
+            </div>
+        );
+    };
+
     const handleSubmit = async (e: FormEvent) => {
         e.preventDefault();
         setIsSaving(true);
         setError(null);
         try {
-            if (isEditing) {
-                await setDoc(doc(db, 'suppliers', id), formState as DocumentData, { merge: true });
-            } else {
-                await addDoc(collection(db, 'suppliers'), formState);
+            const supplierData = { ...formState };
+            
+            // Ensure numeric values are numbers
+            if (supplierData.openingBalance) {
+                supplierData.openingBalance = Number(supplierData.openingBalance);
             }
-            navigate('/suppliers');
+            
+            // Clean optional fields
+            if (supplierData.whatsapp === '') supplierData.whatsapp = null;
+            if (supplierData.email === '') supplierData.email = null;
+            if (supplierData.website === '') supplierData.website = null;
+
+            if (isEditing) {
+                if (!id) throw new Error("ID manquant");
+                const { error } = await supabase.from('suppliers').update(supplierData).eq('id', id);
+                if (error) throw error;
+                addToast('Fournisseur modifié avec succès', 'success', undefined, generateSupplierDetails());
+            } else {
+                const newId = crypto.randomUUID();
+                const newSupplier = { ...supplierData, id: newId };
+                const { error } = await supabase.from('suppliers').insert(newSupplier);
+                if (error) throw error;
+                addToast('Fournisseur créé avec succès', 'success', undefined, generateSupplierDetails());
+            }
+            
+            await refreshData(['suppliers']);
+            setTimeout(() => navigate('/suppliers'), 500);
         } catch (err: any) {
-            setError(`Erreur: ${err.message}`);
+            console.error("Error saving supplier:", err);
+            const errorMessage = err.message || 'Une erreur est survenue';
+            setError(`Erreur: ${errorMessage}`);
+            addToast(errorMessage, 'error');
         } finally {
             setIsSaving(false);
         }
@@ -103,6 +176,23 @@ const SupplierFormPage: React.FC = () => {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div><label className={labelClasses}>Nom de Contact *</label><input type="text" name="name" value={formState.name} onChange={handleInputChange} required className={inputClasses} /></div>
                         <div><label className={labelClasses}>Téléphone *</label><input type="tel" name="phone" value={formState.phone} onChange={handleInputChange} required className={inputClasses} /></div>
+                        <div>
+                            <label className={labelClasses}>WhatsApp</label>
+                            <input 
+                                type="tel" 
+                                name="whatsapp" 
+                                value={formState.whatsapp || ''} 
+                                onChange={handleWhatsappChange} 
+                                onBlur={handleWhatsappBlur}
+                                placeholder="ex: 229XXXXXXXX" 
+                                className={inputClasses} 
+                            />
+                            {formState.whatsapp && (
+                                <p className="text-xs text-gray-500 mt-1">
+                                    Numéro international : <span className="font-mono font-semibold">+{normalizePhoneNumber(formState.whatsapp)}</span>
+                                </p>
+                            )}
+                        </div>
                         <div><label className={labelClasses}>Adresse Email</label><input type="email" name="email" value={formState.email} onChange={handleInputChange} className={inputClasses} /></div>
                         <div><label className={labelClasses}>Site Web</label><input type="url" name="website" value={formState.website} onChange={handleInputChange} placeholder="https://..." className={inputClasses} /></div>
                     </div>

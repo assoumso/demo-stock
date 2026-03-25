@@ -93,7 +93,9 @@ export const ProductListPrint = React.forwardRef<HTMLDivElement, ProductListPrin
                         <th className="py-2 px-2 text-left font-black uppercase tracking-wider">Marque</th>
                         <th className="py-2 px-2 text-left font-black uppercase tracking-wider">Fournisseur</th>
                         <th className="py-2 px-2 text-right font-black uppercase tracking-wider">Stock</th>
-                        <th className="py-2 px-2 text-right font-black uppercase tracking-wider">Prix Vente</th>
+                        <th className="py-2 px-2 text-right font-black uppercase tracking-wider">Coût</th>
+                        <th className="py-2 px-2 text-right font-black uppercase tracking-wider">Grossiste</th>
+                        <th className="py-2 px-2 text-right font-black uppercase tracking-wider">Revendeur</th>
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200">
@@ -105,11 +107,17 @@ export const ProductListPrint = React.forwardRef<HTMLDivElement, ProductListPrin
                             <td className="py-2 px-2">{getCategoryName(product.categoryId)}</td>
                             <td className="py-2 px-2">{getBrandName(product.brandId)}</td>
                             <td className="py-2 px-2">{getSupplierName(product.supplierId)}</td>
-                            <td className={`py-2 px-2 text-right font-mono font-bold ${getTotalStock(product) <= (product.minStockLevel || 0) ? 'text-red-600' : ''}`}>
+                            <td className={`py-2 px-2 text-right font-mono font-bold ${getTotalStock(product) <= (product.minStockAlert || 0) ? 'text-red-600' : ''}`}>
                                 {getTotalStock(product)}
                             </td>
                             <td className="py-2 px-2 text-right font-mono">
-                                {formatCurrency(product.sellingPrice)}
+                                {formatCurrency(product.cost || 0)}
+                            </td>
+                            <td className="py-2 px-2 text-right font-mono">
+                                {formatCurrency(product.wholesalePrice || 0)}
+                            </td>
+                            <td className="py-2 px-2 text-right font-mono font-bold">
+                                {formatCurrency(product.price)}
                             </td>
                         </tr>
                     ))}

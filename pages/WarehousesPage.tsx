@@ -1,12 +1,11 @@
-
-import React, { useState, useEffect, FormEvent } from 'react';
-import { db } from '../firebase';
-import { collection, getDocs, doc, addDoc, updateDoc, deleteDoc, DocumentData, writeBatch } from 'firebase/firestore';
+import React, { useState, FormEvent } from 'react';
+import { supabase } from '../supabase';
 import { Warehouse } from '../types';
 import Modal from '../components/Modal';
 import { PlusIcon, EditIcon, DeleteIcon, ShieldCheckIcon } from '../constants';
 import DropdownMenu, { DropdownMenuItem } from '../components/DropdownMenu';
 import { useAuth } from '../hooks/useAuth';
+import { useData } from '../context/DataContext';
 
 const COLOR_OPTIONS = [
     { name: 'Bleu', value: 'blue', class: 'bg-blue-500' },
@@ -22,8 +21,7 @@ const COLOR_OPTIONS = [
 
 const WarehousesPage: React.FC = () => {
     const { hasPermission } = useAuth();
-    const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
-    const [loading, setLoading] = useState(true);
+    const { warehouses, loading, refreshData } = useData();
     const [error, setError] = useState<string | null>(null);
     
     // Selection State
@@ -34,23 +32,6 @@ const WarehousesPage: React.FC = () => {
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [currentWarehouse, setCurrentWarehouse] = useState<Partial<Warehouse>>({});
     const [isEditing, setIsEditing] = useState(false);
-
-    const fetchData = async () => {
-        setLoading(true);
-        setError(null);
-        try {
-            const warehousesSnap = await getDocs(collection(db, "warehouses"));
-            setWarehouses(warehousesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Warehouse)));
-        } catch (err) {
-            setError("Impossible de charger les entrepôts.");
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    useEffect(() => {
-        fetchData();
-    }, []);
 
     const openModalForNew = () => {
         setIsEditing(false);
@@ -75,14 +56,18 @@ const WarehousesPage: React.FC = () => {
         }
 
         try {
-            if (isEditing) {
-                await updateDoc(doc(db, 'warehouses', id!), data as DocumentData);
+            if (isEditing && id) {
+                const { error } = await supabase.from('warehouses').update(data).eq('id', id);
+                if (error) throw error;
             } else {
-                await addDoc(collection(db, "warehouses"), data);
+                const newId = crypto.randomUUID();
+                const { error } = await supabase.from('warehouses').insert({ ...data, id: newId });
+                if (error) throw error;
             }
-            await fetchData();
+            await refreshData(['config']);
             closeModal();
-        } catch (err) {
+        } catch (err: any) {
+            console.error(err);
             setError("Erreur d'enregistrement.");
         }
     };
@@ -90,21 +75,27 @@ const WarehousesPage: React.FC = () => {
     const handleDelete = async (id: string) => {
         if (window.confirm("Supprimer cet entrepôt ?")) {
             try {
-                await deleteDoc(doc(db, "warehouses", id));
-                await fetchData();
-            } catch (err) {
+                const { error } = await supabase.from('warehouses').delete().eq('id', id);
+                if (error) throw error;
+                await refreshData(['config']);
+            } catch (err: any) {
+                console.error(err);
                 setError("Erreur de suppression.");
             }
         }
     };
 
     const handleBulkDelete = async () => {
-        const batch = writeBatch(db);
-        selectedIds.forEach(id => batch.delete(doc(db, 'warehouses', id)));
-        await batch.commit();
-        await fetchData();
-        setSelectedIds([]);
-        setIsBulkDeleteModalOpen(false);
+        try {
+            const { error } = await supabase.from('warehouses').delete().in('id', selectedIds);
+            if (error) throw error;
+            await refreshData(['config']);
+            setSelectedIds([]);
+            setIsBulkDeleteModalOpen(false);
+        } catch (err: any) {
+            console.error(err);
+            setError("Erreur lors de la suppression en masse.");
+        }
     };
 
     const handleSelectOne = (id: string) => {

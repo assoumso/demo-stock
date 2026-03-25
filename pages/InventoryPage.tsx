@@ -1,22 +1,83 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { db } from '../firebase';
-import { collection, getDocs } from 'firebase/firestore';
+
 import { Product, Warehouse, Category, Brand } from '../types';
 import { Pagination } from '../components/Pagination';
 import { AdjustmentsIcon } from '../constants';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { useData } from '../context/DataContext';
+import * as ReactWindow from 'react-window';
+import { AutoSizer } from 'react-virtualized-auto-sizer';
+
+const List = ReactWindow.FixedSizeList;
+
+interface InventoryRowData {
+    items: Product[];
+    functions: {
+        warehouses: Warehouse[];
+        getSupplierName: (id?: string) => string;
+        getStockForWarehouse: (product: Product, warehouseId: string) => number;
+        getTotalStock: (product: Product) => number;
+        getBorderColor: (color?: string) => string;
+    };
+}
+
+interface InventoryRowProps {
+    index: number;
+    style: React.CSSProperties;
+    data: InventoryRowData;
+}
+
+const InventoryRow = ({ index, style, data }: InventoryRowProps) => {
+    const { items, functions } = data;
+    const product = items[index];
+    const { 
+        warehouses, 
+        getSupplierName, 
+        getStockForWarehouse, 
+        getTotalStock,
+        getBorderColor
+    } = functions;
+
+    const totalStock = getTotalStock(product);
+    const isLowStock = totalStock <= product.minStockAlert;
+    
+    return (
+        <div style={style} className={`flex items-center ${isLowStock ? 'bg-red-50 dark:bg-red-900/20' : 'hover:bg-gray-50 dark:hover:bg-gray-700/30'} transition-colors border-b border-gray-100 dark:border-gray-700`}>
+             <div className="px-6 py-4 whitespace-nowrap overflow-hidden flex-shrink-0" style={{ width: '250px' }}>
+                <div className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-tight truncate" title={product.name}>{product.name}</div>
+                <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest truncate">{product.sku}</div>
+             </div>
+             <div className="px-6 py-4 whitespace-nowrap text-xs font-bold text-gray-500 dark:text-gray-400 uppercase truncate flex-shrink-0" style={{ width: '150px' }}>
+                {getSupplierName(product.supplierId)}
+             </div>
+             {warehouses.map((wh: Warehouse) => {
+                 const qty = getStockForWarehouse(product, wh.id);
+                 return (
+                     <div key={wh.id} className={`px-6 py-4 whitespace-nowrap text-sm text-right font-bold flex-shrink-0 ${qty <= 0 ? 'text-gray-300' : 'text-gray-700 dark:text-gray-200'}`} style={{ width: '100px' }}>
+                         {qty}
+                     </div>
+                 );
+             })}
+             <div className="px-6 py-4 whitespace-nowrap text-sm font-black text-gray-900 dark:text-white text-right bg-gray-50/50 dark:bg-gray-900/20 flex-shrink-0" style={{ width: '100px' }}>
+                 <span className={isLowStock ? 'text-red-600 animate-pulse' : ''}>{totalStock}</span>
+             </div>
+             <div className="px-6 py-4 whitespace-nowrap text-[10px] text-right font-black text-gray-400 uppercase tracking-widest flex-shrink-0" style={{ width: '100px' }}>
+                 {product.minStockAlert}
+             </div>
+        </div>
+    );
+};
 
 const InventoryPage: React.FC = () => {
     const navigate = useNavigate();
     const { hasPermission } = useAuth();
-    const { products, warehouses, categories, brands, suppliers, loading: dataLoading } = useData();
+    const { products, warehouses, categories, brands, suppliers, loading: dataLoading, productsLoading } = useData();
     const [loading, setLoading] = useState(true); // Keep local loading if needed for transition or just use dataLoading
 
     // Sync local loading with dataLoading
-    useEffect(() => { setLoading(dataLoading); }, [dataLoading]);
+    useEffect(() => { setLoading(dataLoading || productsLoading); }, [dataLoading, productsLoading]);
     
     const [error, setError] = useState<string | null>(null);
 
@@ -26,6 +87,7 @@ const InventoryPage: React.FC = () => {
 
     const [currentPage, setCurrentPage] = useState(1);
     const ITEMS_PER_PAGE = 10;
+    const [showAll, setShowAll] = useState(false);
 
     // Removed manual fetch useEffect as we use useData
     
@@ -44,8 +106,9 @@ const InventoryPage: React.FC = () => {
     }, [products, searchTerm, selectedCategory, selectedBrand]);
 
     const paginatedProducts = useMemo(() => {
+        if (showAll) return filteredProducts;
         return filteredProducts.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
-    }, [filteredProducts, currentPage]);
+    }, [filteredProducts, currentPage, showAll]);
 
     const totalPages = Math.ceil(filteredProducts.length / ITEMS_PER_PAGE);
 
@@ -57,7 +120,11 @@ const InventoryPage: React.FC = () => {
          return (product.stockLevels || []).reduce((sum, level) => sum + level.quantity, 0);
     }
 
-    const getSupplierName = (id?: string) => suppliers.find(s => s.id === id)?.name || 'Inconnu';
+    const supplierMap = useMemo(() => {
+        return new Map(suppliers.map(s => [s.id, s.name]));
+    }, [suppliers]);
+
+    const getSupplierName = (id?: string) => (id && supplierMap.get(id)) || 'Inconnu';
 
     const getBorderColor = (color: string = 'blue') => {
         const colorMap: Record<string, string> = {
@@ -67,6 +134,17 @@ const InventoryPage: React.FC = () => {
         };
         return colorMap[color] || 'border-blue-500';
     };
+
+    const itemData = useMemo(() => ({
+        items: paginatedProducts,
+        functions: {
+            warehouses,
+            getSupplierName,
+            getStockForWarehouse,
+            getTotalStock,
+            getBorderColor
+        }
+    }), [paginatedProducts, warehouses, supplierMap]);
 
     const totalPageStockPerWarehouse = useMemo(() => {
         const totals: Record<string, number> = {};
@@ -107,7 +185,7 @@ const InventoryPage: React.FC = () => {
             </div>
 
             <div className="bg-white dark:bg-gray-800 p-4 rounded-3xl shadow-xl border border-gray-100 dark:border-gray-700">
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                     <input
                         type="text"
                         placeholder="Chercher nom ou SKU..."
@@ -131,9 +209,55 @@ const InventoryPage: React.FC = () => {
                         <option value="all">Toutes les marques</option>
                         {brands.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
                     </select>
+                    <button
+                        onClick={() => { setShowAll(!showAll); if (!showAll) setCurrentPage(1); }}
+                        className={`px-4 py-2 rounded-xl font-bold uppercase text-xs shadow-lg transition-all hover:scale-105 ${showAll ? 'bg-primary-600 text-white' : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-600'}`}
+                    >
+                        {showAll ? 'Vue Paginée' : 'Tout afficher'}
+                    </button>
                 </div>
             </div>
 
+            {showAll ? (
+                <div className="bg-white dark:bg-gray-800 shadow-2xl rounded-3xl border border-gray-100 dark:border-gray-700 h-[75vh] flex flex-col">
+                    <div className="flex items-center bg-primary-600 text-white px-0 py-4 font-black uppercase text-[10px] tracking-wider sticky top-0 z-10">
+                        <div className="px-6 flex-shrink-0 text-left" style={{ width: '250px' }}>Produit / SKU</div>
+                        <div className="px-6 flex-shrink-0 text-left" style={{ width: '150px' }}>Fournisseur</div>
+                        {warehouses.map(wh => (
+                            <div key={wh.id} className={`px-6 flex-shrink-0 text-right border-b-4 ${getBorderColor(wh.color)}`} style={{ width: '100px' }}>
+                                {wh.name}
+                            </div>
+                        ))}
+                        <div className="px-6 flex-shrink-0 text-right bg-primary-700" style={{ width: '100px' }}>Total Phys.</div>
+                        <div className="px-6 flex-shrink-0 text-right bg-primary-700" style={{ width: '100px' }}>Seuil</div>
+                    </div>
+                    <div className="flex-1">
+                        <AutoSizer>
+                            {({ height, width }) => (
+                                <List
+                                    height={height}
+                                    width={width}
+                                    itemCount={filteredProducts.length}
+                                    itemSize={80}
+                                    itemData={itemData}
+                                >
+                                    {InventoryRow}
+                                </List>
+                            )}
+                        </AutoSizer>
+                    </div>
+                    <div className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 p-4">
+                        <div className="flex justify-between items-center text-sm font-bold text-gray-500 dark:text-gray-400">
+                            <div>{filteredProducts.length} produits</div>
+                            <div className="flex items-center gap-4">
+                                <span className="uppercase text-xs tracking-wider">Total Stock Physique:</span>
+                                <span className="text-lg font-black text-blue-600">{filteredProducts.reduce((sum, p) => sum + getTotalStock(p), 0)}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            ) : (
+            <>
             <div className="bg-white dark:bg-gray-800 shadow-2xl rounded-3xl border border-gray-100 dark:border-gray-700 overflow-hidden">
                 <div className="overflow-x-auto">
                     <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
@@ -208,6 +332,8 @@ const InventoryPage: React.FC = () => {
                 totalItems={filteredProducts.length}
                 itemsPerPage={ITEMS_PER_PAGE}
             />
+            </>
+            )}
         </div>
     );
 };

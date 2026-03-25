@@ -4,6 +4,7 @@ import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ThemeProvider, useTheme } from './context/ThemeContext';
 import { DataProvider } from './context/DataContext'; // Import du nouveau provider
+import { ToastProvider } from './context/ToastContext';
 import MainLayout from './layouts/MainLayout';
 import ProtectedRoute from './components/ProtectedRoute';
 
@@ -38,6 +39,8 @@ const PurchasesPage = lazy(() => import('./pages/PurchasesPage'));
 const PurchaseFormPage = lazy(() => import('./pages/PurchaseFormPage'));
 const PurchaseInvoicePage = lazy(() => import('./pages/PurchaseInvoicePage'));
 const PaymentsPage = lazy(() => import('./pages/PaymentsPage'));
+const ExpensesPage = lazy(() => import('./pages/ExpensesPage'));
+const ExpenseFormPage = lazy(() => import('./pages/ExpenseFormPage'));
 const QuotesPage = lazy(() => import('./pages/QuotesPage'));
 const QuoteFormPage = lazy(() => import('./pages/QuoteFormPage'));
 const BankPage = lazy(() => import('./pages/BankPage'));
@@ -47,6 +50,7 @@ const SupplierCreditNotesPage = lazy(() => import('./pages/SupplierCreditNotesPa
 const SupplierCreditNoteFormPage = lazy(() => import('./pages/SupplierCreditNoteFormPage'));
 const TestAdjustmentsPage = lazy(() => import('./pages/TestAdjustmentsPage'));
 const SimpleAdjustmentsTest = lazy(() => import('./pages/SimpleAdjustmentsTest'));
+const PosPageSimple = lazy(() => import('./pages/PosPageSimple'));
 
 const LoadingFallback = () => <div className="flex h-screen items-center justify-center bg-gray-100 dark:bg-gray-900 text-gray-400 font-black uppercase tracking-widest animate-pulse">Chargement...</div>;
 
@@ -67,6 +71,7 @@ const AppRoutes: React.FC = () => {
             <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
             <Route path="/test-adjustments" element={<TestAdjustmentsPage />} />
             <Route path="/adjustments-test" element={<SimpleAdjustmentsTest />} />
+            <Route path="/pos-simple" element={<PosPageSimple />} />
             <Route path="/" element={<ProtectedRoute><MainLayout /></ProtectedRoute>}>
                 <Route index element={<DashboardPage />} />
                 <Route path="pos" element={<PosPage />} />
@@ -88,6 +93,9 @@ const AppRoutes: React.FC = () => {
                 <Route path="purchases/edit/:id" element={<PurchaseFormPage />} />
                 <Route path="transfers" element={<TransfersPage />} />
                 <Route path="payments" element={<PaymentsPage />} />
+                <Route path="expenses" element={<ExpensesPage />} />
+                <Route path="expenses/new" element={<ExpenseFormPage />} />
+                <Route path="expenses/edit/:id" element={<ExpenseFormPage />} />
                 <Route path="bank" element={<BankPage />} />
                 <Route path="credit-notes" element={<CreditNotesPage />} />
                 <Route path="credit-notes/new" element={<CreditNoteFormPage />} />
@@ -117,7 +125,6 @@ const AppRoutes: React.FC = () => {
     );
 };
 
-import { fixCompanyPhone } from './utils/updatePhone';
 
 const App: React.FC = () => {
 
@@ -125,11 +132,13 @@ const App: React.FC = () => {
     <AuthProvider>
       <ThemeProvider>
         <DataProvider>
-          <HashRouter>
-              <Suspense fallback={<LoadingFallback />}>
-                  <AppRoutes />
-              </Suspense>
-          </HashRouter>
+          <ToastProvider>
+            <HashRouter>
+                <Suspense fallback={<LoadingFallback />}>
+                    <AppRoutes />
+                </Suspense>
+            </HashRouter>
+          </ToastProvider>
         </DataProvider>
       </ThemeProvider>
     </AuthProvider>
